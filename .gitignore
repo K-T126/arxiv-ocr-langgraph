@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+arxiv_graph.kuzu
+arxiv_graph.kuzu/
+data/*.pdf
+graph.html
+test_*.db
+lib/
