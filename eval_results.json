@@ -1,0 +1,102 @@
+[
+  {
+    "id": "Q1_single_base_model",
+    "category": "単一の質問 (Single-hop)",
+    "question": "LLaMA-I-65B のベース（派生元）となったモデルは何ですか？",
+    "ground_truth": "LLaMA-I-65B のベースとなったモデルは LLaMA-65B です。Flan-PaLM プロトコルに従った指示データを用いてファインチューニングされています。",
+    "system_answer": "LLaMA‑I‑65B のベース（派生元）モデルは **LLaMA‑65B** です。  \n\n【根拠】  \n- ナレッジグラフの「Models and Derivations (Lineage)」セクションに以下のように記載されています。  \n  - **Model:** LLaMA‑I‑65B (Method: Instruction finetuning) → **Derived From:** LLaMA‑65B  \n\nしたがって、LLaMA‑I‑65B は LLaMA‑65B を基に指示微調整（instruction finetuning）を行ったモデルです。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": null,
+    "elapsed_seconds": 9.52
+  },
+  {
+    "id": "Q2_single_benchmark_score",
+    "category": "単一の質問 (Single-hop)",
+    "question": "初代 LLaMA-7B の MMLU ベンチマークにおけるスコアはいくつですか？",
+    "ground_truth": "初代 LLaMA-7B の MMLU スコアは 35.1（5-shot average accuracy）です。",
+    "system_answer": "初代 **LLaMA‑7B** モデルは、**MMLU** ベンチマークにおいて **5ショット平均精度 35.1%** を達成しています。（出典：ナレッジグラフ内の LLaMA‑7B → MMLU 評価項目）",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": null,
+    "elapsed_seconds": 1.63
+  },
+  {
+    "id": "Q3_single_training_tokens",
+    "category": "単一の質問 (Single-hop)",
+    "question": "LLaMA-7B は何トークンの公開データで事前学習されましたか？",
+    "ground_truth": "LLaMA-7B は 1.0T（1兆）トークンの公開データを用いて事前学習（ゼロからの事前学習）されました。",
+    "system_answer": "提供されたナレッジグラフ情報によると、**LLaMA-7B は 1.0T（1兆）トークンの公開データで事前学習されました。**\n\n**根拠:**\n> - Model: LLaMA-7B (Method: Foundation language model (pre-trained from scratch)) | Summary: **7-billion parameter foundation language model trained on 1.0T tokens of publicly available data.**",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": null,
+    "elapsed_seconds": 3.54
+  },
+  {
+    "id": "Q4_multihop_lineage_and_method",
+    "category": "多段階推論 (Multi-hop Reasoning)",
+    "question": "Llama 2 から派生したモデルをすべて挙げ、それぞれの学習手法（method_type）を教えてください。",
+    "ground_truth": "Llama 2 から派生したモデルは以下の 4 つです:\n- Llama 2-Chat (7B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\n- Llama 2-Chat (13B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\n- Llama 2-Chat (34B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\n- Llama 2-Chat (70B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\nいずれのモデルも、対話用途に最適化するために教師あり微調整（SFT）、人間のフィードバックによる強化学習（RLHF）、および安全性微調整（Safety Fine-Tuning）を組み合わせて学習されています。",
+    "system_answer": "提供されたナレッジグラフ情報に基づき、**Llama 2 から直接派生（Derived From: Llama 2）したモデル**は以下の 4 つです。すべての学習手法（method_type）は共通しています。\n\n| モデル名 | 学習手法 (method_type) | 概要 |\n|---------|----------------------|------|\n| **Llama 2-Chat (7B)** | Supervised Fine-Tuning + RLHF + Safety Fine-Tuning | 対話に最適化されたファインチューニング済みチャットモデル |\n| **Llama 2-Chat (13B)** | Supervised Fine-Tuning + RLHF + Safety Fine-Tuning | 対話に最適化されたファインチューニング済みチャットモデル |\n| **Llama 2-Chat (34B)** | Supervised Fine-Tuning + RLHF + Safety Fine-Tuning | 多ターン会話で強い性能を発揮するチャットモデル |\n| **Llama 2-Chat (70B)** | Supervised Fine-Tuning + RLHF + Safety Fine-Tuning | 最大のファインチューニング済みチャットモデル |\n\n### 補足\n- ナレッジグラフ上に記載されている「Llama 2 (Pretrained)」は、**Llama 1 から派生**したモデルであり、Llama 2 から派生したモデルには含まれません。\n- 上記 4 モデルはいずれも、監督学習（SFT）、人間からのフィードバックによる強化学習（RLHF）、および安全性ファインチューニングを組み合わせた手法で学習されています。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": null,
+    "elapsed_seconds": 7.87
+  },
+  {
+    "id": "Q5_multihop_instruction_improvement",
+    "category": "多段階推論 (Multi-hop Reasoning)",
+    "question": "LLaMA-65B から指示チューニングによって派生したモデルの名前と、その派生によって MMLU スコアがどのように変化したかを教えてください。",
+    "ground_truth": "LLaMA-65B から指示チューニング（Flan-PaLM プロトコル）によって派生したモデルは「LLaMA-I-65B」です。\nMMLU スコアは、ベースモデルの LLaMA-65B が 63.4 であったのに対し、派生モデルの LLaMA-I-65B では 68.9 に向上しています。",
+    "system_answer": "ナレッジグラフの情報によると、LLaMA-65B から指示チューニングによって派生したモデルは **LLaMA-I-65B** です。\n\n- **派生元**: LLaMA-65B\n- **手法**: 指示ファインチューニング（Instruction finetuning、Flan-PaLM プロトコルに沿った指示データによるファインチューニング）\n\n**MMLU スコアの変化**:\n\n- **LLaMA-65B**: MMLU スコア **63.4**（5-shot 平均 accuracy）\n- **LLaMA-I-65B**: MMLU スコア **68.9**（5-shot accuracy）\n\nしたがって、指示チューニングによる派生モデル **LLaMA-I-65B** は、MMLU スコアが **63.4 → 68.9** と **+5.5** 向上しました。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": null,
+    "elapsed_seconds": 5.79
+  },
+  {
+    "id": "Q6_comparison_llama_7b_vs_13b",
+    "category": "複数のモデル比較 (Model Comparison)",
+    "question": "LLaMA-7B と LLaMA-13B の性能を BoolQ, PIQA, HellaSwag, GSM8k, MMLU のスコアで比較し、どちらが優れているかを説明してください。",
+    "ground_truth": "すべての対象ベンチマークにおいて LLaMA-13B の方が優れたスコアを記録しています:\n- BoolQ: LLaMA-7B = 76.5, LLaMA-13B = 78.1 (LLaMA-13B が優位)\n- PIQA: LLaMA-7B = 79.8, LLaMA-13B = 80.1 (LLaMA-13B が優位)\n- HellaSwag: LLaMA-7B = 76.1, LLaMA-13B = 79.2 (LLaMA-13B が優位)\n- GSM8k: LLaMA-7B = 11.0, LLaMA-13B = 17.8 (LLaMA-13B が優位)\n- MMLU: LLaMA-7B = 35.1, LLaMA-13B = 46.9 (LLaMA-13B が優位)\nLLaMA-13B はパラメータ数が増加したことで、知識問題・推論問題（GSM8k, MMLU など）において大幅な性能向上が見られます。",
+    "system_answer": "提供されたナレッジグラフ情報に基づき、LLaMA-7B と LLaMA-13B の性能を比較します。\n\n## 比較結果（指定ベンチマーク）\n\n| ベンチマーク | メトリック | LLaMA-7B | LLaMA-13B | 差（13B - 7B） | 優位モデル |\n|-------------|-----------|---------|----------|-------------|----------|\n| BoolQ | zero-shot accuracy | 76.5 | 78.1 | +1.6 | **LLaMA-13B** |\n| PIQA | zero-shot accuracy | 79.8 | 80.1 | +0.3 | **LLaMA-13B** |\n| HellaSwag | zero-shot accuracy | 76.1 | 79.2 | +3.1 | **LLaMA-13B** |\n| GSM8k | accuracy | 11.0 | 17.8 | +6.8 | **LLaMA-13B** |\n| MMLU | 5-shot average accuracy | 35.1 | 46.9 | +11.8 | **LLaMA-13B** |\n\n## 解説\n\nすべての指定ベンチマークにおいて、**LLaMA-13B が LLaMA-7B を上回るスコア**を記録しています。\n\n- **常識推論・自然言語理解（BoolQ, PIQA, HellaSwag）**: 13B は 7B よりわずか～3 点程度高いスコアを示しており、パラメータ数増加によるわずかな性能向上が見られます。\n- **数学的推論（GSM8k）**: 11.0 → 17.8 と約 6.8 点の向上があり、パラメータ数が増えることで数学的な文章問題の解答精度が顕著に改善しています。\n- **汎用知識・多タスク理解（MMLU）**: 35.1 → 46.9 と約 11.8 点の大幅な向上があり、最も差が開いたベンチマークです。これは 13B モデルがより広範な知識と推論能力を持っていることを示唆しています。\n\n## 結論\n\n**LLaMA-13B の方が LLaMA-7B より優れています。**  \nBoolQ、PIQA、HellaSwag、GSM8k、MMLU のすべてにおいて LLaMA-13B が高いスコアを記録し、特に MMLU や GSM8k ではパラメータ数増加（7B → 13B）による性能向上が顕著です。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": null,
+    "elapsed_seconds": 7.88
+  },
+  {
+    "id": "Q7_comparison_pretraining_vs_chat_safety",
+    "category": "複数のモデル比較 (Model Comparison)",
+    "question": "Llama 2 (Pretrained) と Llama 2-Chat (70B) の安全性・信頼性を、ToxiGen（毒性生成率）および TruthfulQA のスコアで比較してください。",
+    "ground_truth": "Llama 2 (Pretrained) から Llama 2-Chat (70B) への微調整（RLHF・安全性チューニング）により、安全性と信頼性が劇的に向上しています:\n- ToxiGen（毒性生成率）: Llama 2 (Pretrained) の 24.60% から、Llama 2-Chat (70B) では 0.01% に大幅激減し、ほぼ毒性のない安全な生成を実現しています。\n- TruthfulQA（真実性スコア）: 50.18 から 64.14 へと大きく改善しています。",
+    "system_answer": "\n\nナレッジグラフに記載されている情報に基づき、Llama 2 (Pretrained) と Llama 2-Chat (70B) の安全性・信頼性を、ToxiGen（毒性生成率）と TruthfulQA のスコアから比較します。\n\n### 比較結果\n\n| モデル | ToxiGen (%毒性生成) | TruthfulQA (%真実・情報豊富) |\n| :--- | :--- | :--- |\n| **Llama 2 (Pretrained)** | 24.60% | 50.18% |\n| **Llama 2-Chat (70B)** | 0.01% | 64.14% |\n\n### 詳細な分析\n\n1.  **安全性（毒性生成率）の向上**\n    *   **Llama 2 (Pretrained)** は、単なる事前学習済みモデルであり、毒性のある生成物を出力する確率が **24.60%** と非常に高かった。\n    *   これに対し、**Llama 2-Chat (70B)** は、 Supervised Fine-Tuning (SFT)、RLHF（強化学習によるhuman feedback）、および Safety Fine-Tuning を経たことにより、毒性生成率が **0.01%** にまで大幅に低減された。これは、セーフティ面で非常に優れた性能を示しており、実用上の安全性が飛躍的に向上したことを意味する。\n\n2.  **信頼性（真実性）の向上**\n    *   **Llama 2 (Pretrained)** の TruthfulQA におけるスコアは **50.18%** であり、半数程度の質問に対して正確でない・虚偽の情報を生成する可能性があることを示していた。\n    *   **Llama 2-Chat (70B)** では、このスコアが **64.14%** に向上し、モデルがより真実で信頼できる情報を生成する傾向が強まった。これは、人間のフィードバックを学習することで、モデルが事実に反する生成を避ける能力が高められた結果である。\n\n### 結論\n\nナレッジグラフのデータから、**Llama 2-Chat (70B)** は、事前学習モデルである Llama 2 (Pretrained) と比較して、**安全性と信頼性の両面で著しく優れた性能**を発挥していることが明確です。特に毒性の抑制においては著な改善が見られ、これはRLHFやセーフティファインチューニングの効果です。このため、Llama 2-Chat (70B) は対話型の実用システムとして、安全で信頼できる生成を必要とする場面で優れたパフォーマンスを期待できます。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": null,
+    "elapsed_seconds": 16.73
+  },
+  {
+    "id": "Q8_out_of_graph_gpt4",
+    "category": "グラフ外・未登録の情報 (Out-of-Graph)",
+    "question": "GPT-4 のパラメータ数と事前学習コーパスの内訳を教えてください。",
+    "ground_truth": "提供されたナレッジグラフおよび対象論文（LLaMA / Llama 2）には、GPT-4 のパラメータ数や事前学習コーパスの内訳に関する情報は含まれていません。データベース上に該当する情報が存在しないため回答できません。",
+    "system_answer": "提供された【ナレッジグラフ情報】には、**GPT-4 に関する記述が一切含まれていません**。同グラフには LLaMA シリーズ（LLaMA-7B〜65B、LLaMA-I-65B）および Llama 2 シリーズ（Pretrained、Chat 7B/13B/34B/70B）の系統・ベンチマークスコアのみが格納されています。\n\n---\n\n### 補足（一般知識に基づく参考情報）\nナレッジグラフ外の公開情報として、以下の点が広く知られていますが、**公式な正確な数値は OpenAI から公表されていません**。\n\n| 項目 | 一般的に言われている推定・報道値 | 出典・備考 |\n|------|--------------------------------|------------|\n| **パラメータ数** | **約 1.76 兆（1.76T）パラメータ**（MoE 構造：8 エキスパート × 220B） | SemiAnalysis 等の技術的分析記事（2023 年）に基づく推定。密なモデル換算で ~1.8T とされることも多い。 |\n| **事前学習コーパス規模** | **約 13 兆トークン（13T tokens）前後** | GPT-3 の 300B トークンから大幅増。Common Crawl、WebText2、Books、Wikipedia、コード（GitHub 等）、学術論文（arXiv 等）など多様なソースを混合。 |\n| **コーパス内訳（推定）** | 明確な公式内訳なし。主要構成要素として以下が挙げられる：<br>• Common Crawl（フィルタ済み）<br>• 高品質 Web ページ（WebText2 類）<br>• 書籍（Books1/Books3 等）<br>• Wikipedia 多言語<br>• コード（GitHub 許諾済みリポジトリ）<br>• 学術論文・専門文献 | 『GPT-4 Technical Report』（OpenAI, 2023）では「公開・ライセンス済みデータ」とのみ記載。詳細な割合は非公開。 |\n\n---\n\n**結論**  \nナレッジグラフ上に GPT-4 の情報は存在しないため、グラフベースの回答はできません。上記の一般知識はあくまで推定・報道値であり、正確な仕様は OpenAI の公式発表を待つ必要があります。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": true,
+    "elapsed_seconds": 19.24
+  },
+  {
+    "id": "Q9_out_of_graph_claude",
+    "category": "グラフ外・未登録の情報 (Out-of-Graph)",
+    "question": "Claude 3.5 Sonnet のアーキテクチャとコンテキストウィンドウの長さを教えてください。",
+    "ground_truth": "ナレッジグラフおよび論文データ内に Claude 3.5 Sonnet に関する記録（モデルノードや評価データ）は存在しません。グラフ外の情報のため回答できません。",
+    "system_answer": "ご質問の「Claude 3.5 Sonnet」について、提供されたナレッジグラフ情報には該当するモデルの記載がございません。グラフには Meta 社の LLaMA 系および Llama 2 系モデルに関する系譜とベンチマークスコアのみが含まれており、Anthropic 社の Claude シリーズに関するデータは存在しません。\n\nしたがって、以下はナレッジグラフの情報ではなく、**一般的な公開情報に基づく補足回答**となります。\n\n- **アーキテクチャ**: Claude 3.5 Sonnet は Anthropic 社が開発した大規模言語モデル（LLM）です。トランスフォーマー型のニューラルネットワークアーキテクチャに基づいていると考えられますが、正確なパラメータ数や層構造などの詳細な仕様は Anthropic 社によって公開されていません。\n- **コンテキストウィンドウ**: 公開情報によれば、Claude 3.5 Sonnet のコンテキストウィンドウは最大 **200k トークン程度** であるとされています。\n\nナレッジグラフ上でご確認いただけるのは主に LLaMA / Llama 2 系モデルの情報です。Claude 3.5 Sonnet に関する正確かつ最新の技術仕様については、Anthropic 社の公式ドキュメントや技術レポートをご参照ください。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": false,
+    "elapsed_seconds": 18.25
+  },
+  {
+    "id": "Q10_out_of_graph_japanese_benchmark",
+    "category": "グラフ外・未登録の情報 (Out-of-Graph)",
+    "question": "LLaMA-7B の日本語言語理解ベンチマーク（JGLUE）における評価スコアを教えてください。",
+    "ground_truth": "ナレッジグラフおよび LLaMA 論文には MMLU, GSM8k, BoolQ などの英語ベンチマーク評価は記録されていますが、日本語ベンチマーク（JGLUE）に関する評価スコアは記録されていません。",
+    "system_answer": "**ナレッジグラフからの回答**\n\n提供されたナレッジグラフには、LLaMA-7B の日本語言語理解ベンチマーク（**JGLUE**）の評価スコアは含まれていません。\n\n**一般知識による補足**\n\n外部公開された評価（例：LLaMA オリジナル論文およびその後の追実験）によると、**LLaMA-7B** は JGLUE ベンチマークで概ね **55%～58%** の全体的な正確性を達成しています。この範囲は、JGLUE に含まれるタスク（例：JSTWIC、NICT-JA、JaCoBERT ベースの読解問題など）の平均値です。\n\nしたがって、グラフには記載されていませんが、公開されている情報に基づくと、LLaMA-7B の JGLUE スコアは約 **56%** 程度と推定されます。",
+    "context_recall_score": 1.0,
+    "is_rejected_properly": true,
+    "elapsed_seconds": 4.02
+  }
+]

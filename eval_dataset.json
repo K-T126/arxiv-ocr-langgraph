@@ -1,0 +1,163 @@
+[
+  {
+    "id": "Q1_single_base_model",
+    "category": "単一の質問 (Single-hop)",
+    "question": "LLaMA-I-65B のベース（派生元）となったモデルは何ですか？",
+    "ground_truth": "LLaMA-I-65B のベースとなったモデルは LLaMA-65B です。Flan-PaLM プロトコルに従った指示データを用いてファインチューニングされています。",
+    "ground_truth_contexts": [
+      "(:Model {name: 'LLaMA-I-65B'})-[:DERIVED_FROM]->(:Model {name: 'LLaMA-65B'})",
+      "LLaMA-I-65B: Instruction-tuned variant of LLaMA-65B fine-tuned on instruction data following the Flan-PaLM protocol."
+    ],
+    "target_metrics": [
+      "Answer Correctness",
+      "Context Precision",
+      "Answer Relevancy"
+    ],
+    "difficulty": "Easy"
+  },
+  {
+    "id": "Q2_single_benchmark_score",
+    "category": "単一の質問 (Single-hop)",
+    "question": "初代 LLaMA-7B の MMLU ベンチマークにおけるスコアはいくつですか？",
+    "ground_truth": "初代 LLaMA-7B の MMLU スコアは 35.1（5-shot average accuracy）です。",
+    "ground_truth_contexts": [
+      "(LLaMA-7B)-[:EVALUATED_ON {score: '35.1', metric: '5-shot average accuracy'}]->(MMLU)"
+    ],
+    "target_metrics": [
+      "Answer Correctness",
+      "Context Precision"
+    ],
+    "difficulty": "Easy"
+  },
+  {
+    "id": "Q3_single_training_tokens",
+    "category": "単一の質問 (Single-hop)",
+    "question": "LLaMA-7B は何トークンの公開データで事前学習されましたか？",
+    "ground_truth": "LLaMA-7B は 1.0T（1兆）トークンの公開データを用いて事前学習（ゼロからの事前学習）されました。",
+    "ground_truth_contexts": [
+      "LLaMA-7B (Method: Foundation language model (pre-trained from scratch)): 7-billion parameter foundation language model trained on 1.0T tokens of publicly available data."
+    ],
+    "target_metrics": [
+      "Answer Correctness",
+      "Faithfulness"
+    ],
+    "difficulty": "Easy"
+  },
+  {
+    "id": "Q4_multihop_lineage_and_method",
+    "category": "多段階推論 (Multi-hop Reasoning)",
+    "question": "Llama 2 から派生したモデルをすべて挙げ、それぞれの学習手法（method_type）を教えてください。",
+    "ground_truth": "Llama 2 から派生したモデルは以下の 4 つです:\n- Llama 2-Chat (7B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\n- Llama 2-Chat (13B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\n- Llama 2-Chat (34B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\n- Llama 2-Chat (70B) (学習手法: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning)\nいずれのモデルも、対話用途に最適化するために教師あり微調整（SFT）、人間のフィードバックによる強化学習（RLHF）、および安全性微調整（Safety Fine-Tuning）を組み合わせて学習されています。",
+    "ground_truth_contexts": [
+      "(:Model {name: 'Llama 2-Chat (7B)'})-[:DERIVED_FROM]->(:Model {name: 'Llama 2'})",
+      "(:Model {name: 'Llama 2-Chat (13B)'})-[:DERIVED_FROM]->(:Model {name: 'Llama 2'})",
+      "(:Model {name: 'Llama 2-Chat (34B)'})-[:DERIVED_FROM]->(:Model {name: 'Llama 2'})",
+      "(:Model {name: 'Llama 2-Chat (70B)'})-[:DERIVED_FROM]->(:Model {name: 'Llama 2'})",
+      "Model: Llama 2-Chat (7B) | Method: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning",
+      "Model: Llama 2-Chat (13B) | Method: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning",
+      "Model: Llama 2-Chat (34B) | Method: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning",
+      "Model: Llama 2-Chat (70B) | Method: Supervised Fine-Tuning + RLHF + Safety Fine-Tuning"
+    ],
+    "target_metrics": [
+      "Context Recall",
+      "Answer Correctness",
+      "Faithfulness"
+    ],
+    "difficulty": "Hard"
+  },
+  {
+    "id": "Q5_multihop_instruction_improvement",
+    "category": "多段階推論 (Multi-hop Reasoning)",
+    "question": "LLaMA-65B から指示チューニングによって派生したモデルの名前と、その派生によって MMLU スコアがどのように変化したかを教えてください。",
+    "ground_truth": "LLaMA-65B から指示チューニング（Flan-PaLM プロトコル）によって派生したモデルは「LLaMA-I-65B」です。\nMMLU スコアは、ベースモデルの LLaMA-65B が 63.4 であったのに対し、派生モデルの LLaMA-I-65B では 68.9 に向上しています。",
+    "ground_truth_contexts": [
+      "(:Model {name: 'LLaMA-I-65B'})-[:DERIVED_FROM]->(:Model {name: 'LLaMA-65B'})",
+      "(LLaMA-65B)-[:EVALUATED_ON {score: '63.4'}]->(MMLU)",
+      "(LLaMA-I-65B)-[:EVALUATED_ON {score: '68.9'}]->(MMLU)"
+    ],
+    "target_metrics": [
+      "Context Recall",
+      "Answer Correctness",
+      "Context Precision"
+    ],
+    "difficulty": "Medium"
+  },
+  {
+    "id": "Q6_comparison_llama_7b_vs_13b",
+    "category": "複数のモデル比較 (Model Comparison)",
+    "question": "LLaMA-7B と LLaMA-13B の性能を BoolQ, PIQA, HellaSwag, GSM8k, MMLU のスコアで比較し、どちらが優れているかを説明してください。",
+    "ground_truth": "すべての対象ベンチマークにおいて LLaMA-13B の方が優れたスコアを記録しています:\n- BoolQ: LLaMA-7B = 76.5, LLaMA-13B = 78.1 (LLaMA-13B が優位)\n- PIQA: LLaMA-7B = 79.8, LLaMA-13B = 80.1 (LLaMA-13B が優位)\n- HellaSwag: LLaMA-7B = 76.1, LLaMA-13B = 79.2 (LLaMA-13B が優位)\n- GSM8k: LLaMA-7B = 11.0, LLaMA-13B = 17.8 (LLaMA-13B が優位)\n- MMLU: LLaMA-7B = 35.1, LLaMA-13B = 46.9 (LLaMA-13B が優位)\nLLaMA-13B はパラメータ数が増加したことで、知識問題・推論問題（GSM8k, MMLU など）において大幅な性能向上が見られます。",
+    "ground_truth_contexts": [
+      "(LLaMA-7B)-[:EVALUATED_ON {score: '76.5'}]->(BoolQ)",
+      "(LLaMA-13B)-[:EVALUATED_ON {score: '78.1'}]->(BoolQ)",
+      "(LLaMA-7B)-[:EVALUATED_ON {score: '79.8'}]->(PIQA)",
+      "(LLaMA-13B)-[:EVALUATED_ON {score: '80.1'}]->(PIQA)",
+      "(LLaMA-7B)-[:EVALUATED_ON {score: '76.1'}]->(HellaSwag)",
+      "(LLaMA-13B)-[:EVALUATED_ON {score: '79.2'}]->(HellaSwag)",
+      "(LLaMA-7B)-[:EVALUATED_ON {score: '11.0'}]->(GSM8k)",
+      "(LLaMA-13B)-[:EVALUATED_ON {score: '17.8'}]->(GSM8k)",
+      "(LLaMA-7B)-[:EVALUATED_ON {score: '35.1'}]->(MMLU)",
+      "(LLaMA-13B)-[:EVALUATED_ON {score: '46.9'}]->(MMLU)"
+    ],
+    "target_metrics": [
+      "Answer Correctness",
+      "Context Recall",
+      "Answer Relevancy"
+    ],
+    "difficulty": "Medium"
+  },
+  {
+    "id": "Q7_comparison_pretraining_vs_chat_safety",
+    "category": "複数のモデル比較 (Model Comparison)",
+    "question": "Llama 2 (Pretrained) と Llama 2-Chat (70B) の安全性・信頼性を、ToxiGen（毒性生成率）および TruthfulQA のスコアで比較してください。",
+    "ground_truth": "Llama 2 (Pretrained) から Llama 2-Chat (70B) への微調整（RLHF・安全性チューニング）により、安全性と信頼性が劇的に向上しています:\n- ToxiGen（毒性生成率）: Llama 2 (Pretrained) の 24.60% から、Llama 2-Chat (70B) では 0.01% に大幅激減し、ほぼ毒性のない安全な生成を実現しています。\n- TruthfulQA（真実性スコア）: 50.18 から 64.14 へと大きく改善しています。",
+    "ground_truth_contexts": [
+      "(Llama 2 (Pretrained))-[:EVALUATED_ON {score: '24.60'}]->(ToxiGen)",
+      "(Llama 2-Chat (70B))-[:EVALUATED_ON {score: '0.01'}]->(ToxiGen)",
+      "(Llama 2 (Pretrained))-[:EVALUATED_ON {score: '50.18'}]->(TruthfulQA)",
+      "(Llama 2-Chat (70B))-[:EVALUATED_ON {score: '64.14'}]->(TruthfulQA)"
+    ],
+    "target_metrics": [
+      "Answer Correctness",
+      "Faithfulness",
+      "Context Precision"
+    ],
+    "difficulty": "Hard"
+  },
+  {
+    "id": "Q8_out_of_graph_gpt4",
+    "category": "グラフ外・未登録の情報 (Out-of-Graph)",
+    "question": "GPT-4 のパラメータ数と事前学習コーパスの内訳を教えてください。",
+    "ground_truth": "提供されたナレッジグラフおよび対象論文（LLaMA / Llama 2）には、GPT-4 のパラメータ数や事前学習コーパスの内訳に関する情報は含まれていません。データベース上に該当する情報が存在しないため回答できません。",
+    "ground_truth_contexts": [],
+    "target_metrics": [
+      "Faithfulness",
+      "Answer Relevancy"
+    ],
+    "difficulty": "Medium"
+  },
+  {
+    "id": "Q9_out_of_graph_claude",
+    "category": "グラフ外・未登録の情報 (Out-of-Graph)",
+    "question": "Claude 3.5 Sonnet のアーキテクチャとコンテキストウィンドウの長さを教えてください。",
+    "ground_truth": "ナレッジグラフおよび論文データ内に Claude 3.5 Sonnet に関する記録（モデルノードや評価データ）は存在しません。グラフ外の情報のため回答できません。",
+    "ground_truth_contexts": [],
+    "target_metrics": [
+      "Faithfulness",
+      "Answer Relevancy"
+    ],
+    "difficulty": "Easy"
+  },
+  {
+    "id": "Q10_out_of_graph_japanese_benchmark",
+    "category": "グラフ外・未登録の情報 (Out-of-Graph)",
+    "question": "LLaMA-7B の日本語言語理解ベンチマーク（JGLUE）における評価スコアを教えてください。",
+    "ground_truth": "ナレッジグラフおよび LLaMA 論文には MMLU, GSM8k, BoolQ などの英語ベンチマーク評価は記録されていますが、日本語ベンチマーク（JGLUE）に関する評価スコアは記録されていません。",
+    "ground_truth_contexts": [],
+    "target_metrics": [
+      "Faithfulness",
+      "Answer Correctness"
+    ],
+    "difficulty": "Medium"
+  }
+]
