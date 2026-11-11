@@ -1,0 +1,12 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/
+data_backup/
+eval_results.json
+eval_dataset.json
+eval_dataset.md
+*.log

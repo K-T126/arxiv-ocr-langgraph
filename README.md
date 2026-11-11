@@ -202,3 +202,39 @@ python3 query.py "LLaMA" --no-llm
 python3 visualize.py
 # -> カレントディレクトリに graph.html が生成され、ブラウザで探索可能です
 ```
+
+---
+
+### 4. FastAPI Web サービスの起動 (`app/main.py`)
+
+FastAPI による Web API サーバーおよびダッシュボード UI を起動します。
+
+```bash
+# 開発用サーバー起動 (ポート 8080)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+```
+
+* **Web UI ダッシュボード**: `http://localhost:8080/`
+  * 質問入力と回答ストリーム表示
+  * インタラクティブなナレッジグラフプレビュー
+* **Swagger API ドキュメント**: `http://localhost:8080/docs`
+* **エンドポイント一覧**:
+  * `POST /api/query`: GraphRAG 質問回答 API
+  * `GET /api/stats`: グラフ統計情報（モデル数・リレーション数）
+  * `GET /api/graph`: ノード & エッジ JSON データ
+  * `GET /graph/view`: 全画面インタラクティブグラフ HTML
+  * `GET /health`: ヘルスチェック (Cloud Run 死活監視)
+
+---
+
+### 5. GCP (Google Cloud Run) へのデプロイ
+
+```bash
+# 1. gcloud CLI のログインとプロジェクト設定
+gcloud auth login
+gcloud config set project <YOUR_PROJECT_ID>
+
+# 2. デプロイスクリプトを実行
+export OPENROUTER_API_KEY="your-openrouter-key"
+./deploy_gcp.sh
+```
