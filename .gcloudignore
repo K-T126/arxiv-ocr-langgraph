@@ -1,0 +1,17 @@
+.gcloudignore
+.git/
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/
+data_backup/
+lib/
+eval_results.json
+eval_dataset.json
+eval_dataset.md
+arxiv_graph_sample_backup.kuzu
+*.log
+test_*.db

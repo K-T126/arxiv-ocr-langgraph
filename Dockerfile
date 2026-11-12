@@ -16,7 +16,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # アプリケーションコードとデータをコピー
 COPY app/ ./app/
-COPY lib/ ./lib/
 COPY arxiv_graph.kuzu ./arxiv_graph.kuzu
 COPY graph.html ./graph.html
 COPY query.py ingest.py visualize.py ./
