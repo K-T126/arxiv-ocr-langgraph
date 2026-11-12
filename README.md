@@ -238,6 +238,7 @@ gcloud config set project <YOUR_PROJECT_ID>
 export OPENROUTER_API_KEY="your-openrouter-key"
 ./deploy_gcp.sh
 
-# Cloud Runで作成した成果物のURL
-サービス公開URL: https://arxiv-graphrag-vqqqjccd6q-an.a.run.app
 ```
+
+### 6. Cloud Runで作成した成果物のURL
+サービス公開URL: https://arxiv-graphrag-vqqqjccd6q-an.a.run.app
