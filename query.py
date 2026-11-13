@@ -47,61 +47,105 @@ class GraphRAGState(TypedDict, total=False):
 # --- グラフ検索ヘルパー ---
 
 
-def retrieve_graph_context_from_db(conn: kuzu.Connection, entities: Optional[List[str]] = None) -> str:
-    """KùzuDB からモデルのノード、派生関係、ベンチマーク評価を取得し、テキストに整形する"""
-    lines = []
-    lines.append("=== KùzuDB Knowledge Graph Context ===")
+def retrieve_graph_context_from_db(
+    conn: kuzu.Connection,
+    entities: Optional[List[str]] = None,
+    question: Optional[str] = None,
+    max_models: int = 40,
+) -> str:
+    """Find question-mentioned graph entities, then retrieve their local subgraph."""
+    question_text = question or ""
+    terms = [term.strip() for term in (entities or []) if len(term.strip()) >= 2]
+    lines = ["=== Question-relevant Knowledge Graph Context ==="]
 
-    # 1. すべての Model ノードとその派生親 (DERIVED_FROM)
-    model_query = """
-    MATCH (m:Model)
-    OPTIONAL MATCH (m)-[:DERIVED_FROM]->(parent:Model)
-    RETURN m.name, m.method_type, m.summary, parent.name
-    """
-    try:
-        res = conn.execute(model_query)
-        models_info = []
-        while res.has_next():
-            row = res.get_next()
-            m_name, method_type, summary, parent_name = row[0], row[1], row[2], row[3]
-            line = f"- Model: {m_name} (Method: {method_type or 'Unknown'})"
-            if parent_name:
-                line += f" -> Derived From: {parent_name}"
-            if summary:
-                line += f" | Summary: {summary}"
-            models_info.append(line)
+    # Match known labels against the full question as well as extracted tokens.
+    # This keeps Japanese questions useful even when regex tokenization is weak.
+    model_names: List[str] = []
+    benchmark_names: List[str] = []
+    for query, output in (("MATCH (m:Model) RETURN m.name", model_names), ("MATCH (b:Benchmark) RETURN b.name", benchmark_names)):
+        try:
+            result = conn.execute(query)
+            while result.has_next():
+                name = result.get_next()[0]
+                if name:
+                    output.append(name)
+        except Exception as exc:
+            logger.warning("Failed to list graph labels: %s", exc)
 
-        if models_info:
-            lines.append("\n[Models and Derivations (Lineage)]:")
-            lines.extend(models_info)
-        else:
-            lines.append("\n[Models and Derivations]: No models found in database.")
-    except Exception as e:
-        logger.warning("Failed to query models: %s", e)
+    haystack = (question_text + " " + " ".join(terms)).casefold()
+    matched_models = [name for name in model_names if name.casefold() in haystack]
+    matched_benchmarks = [name for name in benchmark_names if name.casefold() in haystack]
+    seed_models = set(matched_models)
+    # Benchmark-only questions should retrieve models evaluated on that benchmark.
+    for name in matched_benchmarks:
+        try:
+            result = conn.execute("MATCH (m:Model)-[:HAS_EVALUATION]->(:Evaluation)-[:EVALUATION_ON]->(b:Benchmark {name: $name}) RETURN DISTINCT m.name", parameters={"name": name})
+            while result.has_next():
+                seed_models.add(result.get_next()[0])
+        except Exception as exc:
+            logger.info("Using legacy evaluation edges for benchmark lookup: %s", exc)
+            try:
+                result = conn.execute("MATCH (m:Model)-[:EVALUATED_ON]->(b:Benchmark {name: $name}) RETURN DISTINCT m.name", parameters={"name": name})
+                while result.has_next():
+                    seed_models.add(result.get_next()[0])
+            except Exception as legacy_exc:
+                logger.warning("Failed to find benchmark models: %s", legacy_exc)
 
-    # 2. ベンチマーク評価 (EVALUATED_ON)
-    eval_query = """
-    MATCH (m:Model)-[r:EVALUATED_ON]->(b:Benchmark)
-    RETURN m.name, b.name, r.score, r.metric
-    """
-    try:
-        res = conn.execute(eval_query)
-        evals_info = []
-        while res.has_next():
-            row = res.get_next()
-            m_name, b_name, score, metric = row[0], row[1], row[2], row[3]
-            evals_info.append(
-                f"- {m_name} on {b_name}: Score = {score or 'N/A'} (Metric: {metric or 'N/A'})"
-            )
+    if not seed_models:
+        lines.append("No graph entities matched the question. No unrelated graph records were retrieved.")
+        return "\n".join(lines)
 
-        if evals_info:
-            lines.append("\n[Benchmark Evaluations]:")
-            lines.extend(evals_info)
-        else:
-            lines.append("\n[Benchmark Evaluations]: No evaluation records found in database.")
-    except Exception as e:
-        logger.warning("Failed to query evaluations: %s", e)
+    # Include one-hop lineage neighbors so questions about descendants/ancestors work.
+    relevant_models = set(seed_models)
+    for name in list(seed_models):
+        for query in (
+            "MATCH (m:Model {name: $name})-[:DERIVED_FROM]->(n:Model) RETURN n.name",
+            "MATCH (n:Model)-[:DERIVED_FROM]->(m:Model {name: $name}) RETURN n.name",
+        ):
+            try:
+                result = conn.execute(query, parameters={"name": name})
+                while result.has_next():
+                    neighbor = result.get_next()[0]
+                    if neighbor:
+                        relevant_models.add(neighbor)
+            except Exception as exc:
+                logger.warning("Failed to expand model lineage: %s", exc)
+    relevant_models = set(sorted(relevant_models)[:max_models])
 
+    lines.append("[Matched entities]")
+    lines.append("Models: " + (", ".join(sorted(matched_models)) or "(none; inferred from benchmark)") )
+    lines.append("Benchmarks: " + (", ".join(sorted(matched_benchmarks)) or "(none)"))
+    lines.append("\n[Models and one-hop lineage]")
+    for name in sorted(relevant_models):
+        try:
+            result = conn.execute("MATCH (m:Model {name: $name}) OPTIONAL MATCH (m)-[:DERIVED_FROM]->(p:Model) RETURN m.name, m.method_type, m.summary, collect(p.name)", parameters={"name": name})
+            if result.has_next():
+                row = result.get_next()
+                parents = [p for p in (row[3] or []) if p]
+                lines.append(f"- {row[0]} (Method: {row[1] or 'Unknown'}; Derived from: {', '.join(parents) or 'unknown'}) | Summary: {row[2] or 'N/A'}")
+                provenance = conn.execute("MATCH (m:Model {name: $name})-[r:DERIVED_FROM_REPORTED]->(p:Model) OPTIONAL MATCH (src:Paper {arxiv_id: r.paper_id}) RETURN p.name, src.title, src.source_url, r.evidence", parameters={"name": name})
+                while provenance.has_next():
+                    source = provenance.get_next()
+                    lines.append(f"  lineage evidence: {name} derived from {source[0]}; source={source[1] or 'N/A'} ({source[2] or 'no URL'}); evidence={source[3] or 'N/A'}")
+        except Exception as exc:
+            logger.warning("Failed to retrieve model %s: %s", name, exc)
+
+    lines.append("\n[Evaluation observations with source]")
+    for name in sorted(relevant_models):
+        try:
+            result = conn.execute("MATCH (m:Model {name: $name})-[:HAS_EVALUATION]->(e:Evaluation)-[:EVALUATION_ON]->(b:Benchmark) OPTIONAL MATCH (e)-[:REPORTED_IN]->(p:Paper) RETURN b.name, e.score, e.metric, e.conditions, e.evidence, p.title, p.source_url", parameters={"name": name})
+            while result.has_next():
+                row = result.get_next()
+                lines.append(f"- {name} on {row[0]}: score={row[1] or 'N/A'}, metric={row[2] or 'N/A'}, conditions={row[3] or 'N/A'}, evidence={row[4] or 'N/A'}, source={row[5] or 'N/A'} ({row[6] or 'no URL'})")
+        except Exception:
+            # Compatibility with databases populated before the provenance schema.
+            try:
+                result = conn.execute("MATCH (m:Model {name: $name})-[r:EVALUATED_ON]->(b:Benchmark) RETURN b.name, r.score, r.metric", parameters={"name": name})
+                while result.has_next():
+                    row = result.get_next()
+                    lines.append(f"- {name} on {row[0]}: score={row[1] or 'N/A'}, metric={row[2] or 'N/A'} (legacy record; source unavailable)")
+            except Exception as exc:
+                logger.warning("Failed to retrieve evaluations for %s: %s", name, exc)
     return "\n".join(lines)
 
 
@@ -130,7 +174,7 @@ def create_query_graph(llm: Optional[ChatOpenAI], db_path: str):
         try:
             db = kuzu.Database(target_db)
             conn = kuzu.Connection(db)
-            context = retrieve_graph_context_from_db(conn, entities=state.get("entities"))
+            context = retrieve_graph_context_from_db(conn, entities=state.get("entities"), question=state.get("question"))
             return {"graph_context": context}
         except Exception as e:
             logger.error("Error retrieving from KùzuDB: %s", e)

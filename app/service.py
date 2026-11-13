@@ -63,7 +63,7 @@ class GraphRAGService:
         def retrieve_graph_node(state: GraphRAGState) -> Dict[str, Any]:
             try:
                 conn = self.get_connection()
-                context = retrieve_graph_context_from_db(conn, entities=state.get("entities"))
+                context = retrieve_graph_context_from_db(conn, entities=state.get("entities"), question=state.get("question"))
                 return {"graph_context": context}
             except Exception as e:
                 logger.error("Error retrieving from KùzuDB: %s", e)

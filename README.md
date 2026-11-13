@@ -122,10 +122,14 @@ LLM 論文を自動検索（または URL/ID 指定）で取得し、LangGraph �
    * 不正フォーマット時は自己修復ノードが自動でリトライ。
 5. **KùzuDB (`kuzu`)**:
    * 以下のノードとリレーションをローカル DB に書き込み。
-     * **ノード**: `Model`（LLM名）, `Benchmark`（評価データセット）
+   * **ノード**: `Model`（LLM名）, `Benchmark`（評価データセット）, `Paper`（論文出典）, `Evaluation`（論文ごとの評価観測）
      * **リレーション**: 
        * `(:Model)-[:DERIVED_FROM]->(:Model)`
-       * `(:Model)-[:EVALUATED_ON {score, metric}]->(:Benchmark)`
+       * `(:Model)-[:EVALUATED_ON {score, metric}]->(:Benchmark)`（旧形式との互換）
+       * `(:Model)-[:HAS_EVALUATION]->(:Evaluation)-[:EVALUATION_ON]->(:Benchmark)`
+       * `(:Evaluation)-[:REPORTED_IN]->(:Paper)` と `(:Model)-[:MENTIONED_IN]->(:Paper)`
+       * `DERIVED_FROM_REPORTED` に派生元・出典論文・根拠を保存
+   * `Evaluation` はスコア、指標、評価条件、根拠を個別に持つため、同じモデルとベンチマークの複数論文・条件の結果を保持できます。
 
 ---
 
@@ -133,8 +137,8 @@ LLM 論文を自動検索（または URL/ID 指定）で取得し、LangGraph �
 
 「LLaMA から派生した指示チューニングモデルと、それぞれの GSM8K のスコアを教えて」といった質問に答えます。
 
-1. **LangGraph エンティティ抽出 & KùzuDB クエリ**:
-   * 質問キーワード（例: LLaMA）から Cypher クエリを実行し、派生ツリーやベンチマークスコアのサブグラフを取得。
+1. **質問に応じた KùzuDB サブグラフ検索**:
+   * 質問内の既知のモデル名・ベンチマーク名をDB内の名称と照合し、一致したモデルと一段の派生関係・評価記録を取得。名称が一致しない場合、無関係な全グラフは回答コンテキストに含めません。
 2. **LangGraph 推論 & 回答生成**:
    * 取得したグラフ構造データをプロンプトにコンテキストとして埋め込み、日本語でわかりやすく回答を生成。
 

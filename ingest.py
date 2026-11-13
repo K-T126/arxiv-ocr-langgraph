@@ -13,6 +13,7 @@ README.md Step 2 の仕様に従い、以下のパイプラインを LangGraph �
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -55,6 +56,8 @@ class Evaluation(BaseModel):
         None,
         description="Metric used for evaluation (e.g., 'accuracy', 'pass@1', 'BLEU')",
     )
+    conditions: Optional[str] = Field(None, description="Evaluation setup such as split, shot count, or model size")
+    evidence: Optional[str] = Field(None, description="Short verbatim evidence or table reference supporting this result")
 
 
 class ModelInfo(BaseModel):
@@ -78,10 +81,13 @@ class ModelInfo(BaseModel):
         None,
         description="Short summary of the model and its main contributions",
     )
+    evidence: Optional[str] = Field(None, description="Short evidence or section/table reference supporting this model and lineage")
 
 
 class PaperAnalysis(BaseModel):
     paper_title: str = Field(..., description="Title of the paper")
+    arxiv_id: Optional[str] = Field(None, description="arXiv identifier when known")
+    source_url: Optional[str] = Field(None, description="Canonical paper URL when known")
     models: List[ModelInfo] = Field(
         default_factory=list,
         description="List of LLM models or methods analyzed or proposed in this paper",
@@ -94,6 +100,8 @@ class PaperAnalysis(BaseModel):
 class PaperIngestState(TypedDict, total=False):
     pdf_path: str
     paper_title: str
+    arxiv_id: str
+    source_url: str
     raw_text: str
     analysis: Optional[PaperAnalysis]
     error: Optional[str]
@@ -153,6 +161,15 @@ def init_kuzu_db(db_path: str):
         """
     )
 
+    # Provenance and observation nodes preserve sources and repeated results.
+    conn.execute("CREATE NODE TABLE IF NOT EXISTS Paper(arxiv_id STRING, title STRING, source_url STRING, PRIMARY KEY (arxiv_id))")
+    conn.execute("CREATE NODE TABLE IF NOT EXISTS Evaluation(evaluation_id STRING, score STRING, metric STRING, conditions STRING, evidence STRING, PRIMARY KEY (evaluation_id))")
+    conn.execute("CREATE REL TABLE IF NOT EXISTS MENTIONED_IN(FROM Model TO Paper)")
+    conn.execute("CREATE REL TABLE IF NOT EXISTS DERIVED_FROM_REPORTED(FROM Model TO Model, paper_id STRING, evidence STRING)")
+    conn.execute("CREATE REL TABLE IF NOT EXISTS HAS_EVALUATION(FROM Model TO Evaluation)")
+    conn.execute("CREATE REL TABLE IF NOT EXISTS EVALUATION_ON(FROM Evaluation TO Benchmark)")
+    conn.execute("CREATE REL TABLE IF NOT EXISTS REPORTED_IN(FROM Evaluation TO Paper)")
+
     return db, conn
 
 
@@ -186,8 +203,13 @@ def extract_text_from_pdf(pdf_path: str, max_chars: int = 250000) -> str:
 # --- KùzuDB への保存処理 ---
 
 
-def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis):
+def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis, paper_title: Optional[str] = None, arxiv_id: Optional[str] = None, source_url: Optional[str] = None):
     """抽出したデータを KùzuDB に書き込む"""
+    title = analysis.paper_title or paper_title or "Untitled"
+    paper_id = analysis.arxiv_id or arxiv_id or "title:" + hashlib.sha256(title.strip().casefold().encode()).hexdigest()[:24]
+    paper_url = analysis.source_url or source_url or (f"https://arxiv.org/abs/{paper_id}" if not paper_id.startswith("title:") else "")
+    conn.execute("MERGE (p:Paper {arxiv_id: $id}) ON CREATE SET p.title = $title, p.source_url = $url ON MATCH SET p.title = $title, p.source_url = $url", parameters={"id": paper_id, "title": title, "url": paper_url})
+
     for model in analysis.models:
         model_name = model.model_name.strip()
         method_type = model.method_type or "Unknown"
@@ -207,6 +229,7 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis):
             },
         )
         logger.info("Saved Model node: %s", model_name)
+        conn.execute("MATCH (m:Model {name: $name}), (p:Paper {arxiv_id: $paper}) MERGE (m)-[:MENTIONED_IN]->(p)", parameters={"name": model_name, "paper": paper_id})
 
         # 2. ベースモデルが存在する場合、親ノード作成と DERIVED_FROM リレーション登録
         if model.base_model:
@@ -226,6 +249,7 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis):
                     """,
                     parameters={"child": model_name, "parent": base_model_name},
                 )
+                conn.execute("MATCH (m:Model {name: $child}), (b:Model {name: $parent}) MERGE (m)-[r:DERIVED_FROM_REPORTED {paper_id: $paper}]->(b) ON CREATE SET r.evidence = $evidence", parameters={"child": model_name, "parent": base_model_name, "paper": paper_id, "evidence": model.evidence or ""})
                 logger.info(
                     "Created relationship: (:Model %s)-[:DERIVED_FROM]->(:Model %s)",
                     model_name,
@@ -247,6 +271,10 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis):
                 """,
                 parameters={"name": b_name},
             )
+            evidence_key = "|".join([paper_id, model_name.casefold(), b_name.casefold(), score, metric, ev.conditions or "", ev.evidence or ""])
+            evaluation_id = hashlib.sha256(evidence_key.encode()).hexdigest()
+            conn.execute("MERGE (e:Evaluation {evaluation_id: $id}) ON CREATE SET e.score = $score, e.metric = $metric, e.conditions = $conditions, e.evidence = $evidence", parameters={"id": evaluation_id, "score": score, "metric": metric, "conditions": ev.conditions or "", "evidence": ev.evidence or ""})
+            conn.execute("MATCH (m:Model {name: $model}), (e:Evaluation {evaluation_id: $id}), (b:Benchmark {name: $benchmark}), (p:Paper {arxiv_id: $paper}) MERGE (m)-[:HAS_EVALUATION]->(e) MERGE (e)-[:EVALUATION_ON]->(b) MERGE (e)-[:REPORTED_IN]->(p)", parameters={"model": model_name, "id": evaluation_id, "benchmark": b_name, "paper": paper_id})
 
             conn.execute(
                 """
@@ -305,15 +333,18 @@ def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
             "Output MUST be valid JSON matching this schema:\n"
             "{\n"
             '  "paper_title": "string",\n'
+            '  "arxiv_id": "string or null",\n'
+            '  "source_url": "string or null",\n'
             '  "models": [\n'
             "    {\n"
             '      "model_name": "string (e.g., Alpaca-7B)",\n'
             '      "base_model": "string or null",\n'
             '      "method_type": "string or null",\n'
             '      "evaluations": [\n'
-            '        {"benchmark": "string", "score": "string or null", "metric": "string or null"}\n'
+            '        {"benchmark": "string", "score": "string or null", "metric": "string or null", "conditions": "string or null", "evidence": "short quote or table reference"}\n'
             "      ],\n"
             '      "summary": "string or null"\n'
+            '      "evidence": "short quote or section/table reference"\n'
             "    }\n"
             "  ]\n"
             "}\n"
@@ -399,7 +430,7 @@ def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
         try:
             target_db = state.get("db_path", db_path)
             db, conn = init_kuzu_db(target_db)
-            save_to_kuzu(conn, analysis)
+            save_to_kuzu(conn, analysis, paper_title=state.get("paper_title"), arxiv_id=state.get("arxiv_id"), source_url=state.get("source_url"))
             logger.info("Saved analysis for '%s' to KùzuDB at %s", state.get("paper_title"), target_db)
         except Exception as e:
             logger.error("Failed to save into KùzuDB: %s", e)
@@ -628,7 +659,7 @@ def main():
             logger.error("Specified PDF file does not exist: %s", args.pdf)
             sys.exit(1)
         title = os.path.splitext(os.path.basename(args.pdf))[0]
-        targets.append((title, args.pdf))
+        targets.append((title, args.pdf, None, None))
     else:
         papers = download_arxiv_papers(
             query=args.query,
@@ -637,7 +668,8 @@ def main():
             arxiv_id=args.arxiv_id,
         )
         for p, pdf_path in papers:
-            targets.append((p.title, pdf_path))
+            paper_id = p.get_short_id()
+            targets.append((p.title, pdf_path, paper_id, f"https://arxiv.org/abs/{paper_id}"))
 
     if not targets:
         logger.warning("No papers found or specified to process.")
@@ -648,12 +680,14 @@ def main():
     # LangGraph パイプラインをコンパイル
     app = create_ingest_graph(llm=llm, db_path=args.db_path)
 
-    for title, pdf_path in targets:
+    for title, pdf_path, paper_id, source_url in targets:
         logger.info("==========================================")
         logger.info("[LangGraph] Processing paper: %s", title)
         initial_state: PaperIngestState = {
             "pdf_path": pdf_path,
             "paper_title": title,
+            "arxiv_id": paper_id,
+            "source_url": source_url,
             "raw_text": "",
             "analysis": None,
             "error": None,
