@@ -24,7 +24,7 @@ arXiv の学術論文の中から **LLM（大規模言語モデル）分野の�
   * 根拠論文: https://arxiv.org/pdf/2509.25922
   * テキスト読み取り・情報抽出において軽量かつ高精度。
 * **APIプロバイダー**: **OpenRouter**（または OpenAI 互換 API プロバイダー）
-  * **採用理由（長文トークン制限の解決）**: Hugging Face 無料サーバーレス API の制限を回避し、Qwen2.5 本来の **128k トークン（長文コンテキスト）** を活用して論文全文を丸ごと安定して処理するため。
+* **長文処理**: プロバイダーごとのコンテキスト上限に依存しないよう、PDF本文をページ範囲付きの小さなチャンクに分けて処理します。
   * LangChain / LangGraph の `ChatOpenAI` クライアント経由で呼び出し。
 
 ---
@@ -37,14 +37,16 @@ arXiv の学術論文の中から **LLM（大規模言語モデル）分野の�
 
 ```mermaid
 flowchart TD
-    Start([開始]) --> ExtractText["TextExtractNode (PyMuPDF)"]
-    ExtractText --> AnalyzePaper["AnalyzePaperNode (ChatOpenAI 構造化抽出)"]
-    AnalyzePaper --> ValidateAnalysis{"ValidateNode (Pydantic スキーマ検証)"}
-    ValidateAnalysis -- "検証成功" --> SaveKuzu["SaveKuzuNode (KùzuDB MERGE登録)"]
-    ValidateAnalysis -- "検証失敗 (リトライ残あり)" --> Heal["HealNode (自己修復・プロンプト補正)"]
-    Heal --> AnalyzePaper
-    ValidateAnalysis -- "リトライ上限到達" --> SaveKuzu
-    SaveKuzu --> End([完了])
+    Start([開始]) --> ExtractText["PyMuPDF: 全ページ抽出・チャンク分割"]
+    ExtractText --> AnalyzeChunk["チャンク単位の構造化抽出"]
+    AnalyzeChunk --> Validate{"チャンク検証"}
+    Validate -- "成功・残りあり" --> AnalyzeChunk
+    Validate -- "失敗・再試行可能" --> Heal["エラー内容を付けて失敗チャンクを再試行"]
+    Heal --> AnalyzeChunk
+    Validate -- "全チャンク成功" --> Merge["重複統合・出典付与"]
+    Merge --> Save["全体成功時のみKùzuDBへ保存"]
+    Validate -- "上限到達" --> Failed["失敗状態を返す。保存しない"]
+    Save --> End([完了])
 ```
 
 ### 2. 質問回答グラフ (`query.py`)
@@ -110,7 +112,7 @@ LLM 論文を自動検索（または URL/ID 指定）で取得し、LangGraph �
    * 検索クエリ `cat:cs.CL AND (LLM OR "Large Language Model")` に基づき、指定件数（例: 最新 5 件）の論文メタデータと PDF を `data/` に自動ダウンロード。
    * （URL や arXiv ID を直接指定してダウンロード・取り込みすることも可能）
 2. **PyMuPDF (`fitz`)**:
-   * ダウンロードした PDF から本文テキストを抽出。
+   * PDF全ページを抽出し、ページ範囲を付けて約24,000文字単位に分割。上限で本文を切り捨てず、各チャンクを個別に処理する（文字数はトークン数の保守的な目安）。
 3. **Pydantic スキーマ定義 (LLM 特化)**:
    * 手法/モデル名（`model_name`: 例: "Alpaca"）
    * ベースモデル・親手法（`base_model` / `derived_from`: 例: "LLaMA-7B"）
@@ -118,8 +120,8 @@ LLM 論文を自動検索（または URL/ID 指定）で取得し、LangGraph �
    * 評価ベンチマークとスコア（`evaluations`: `benchmark`（例: "MMLU", "GSM8K"）, `score`, `metric`）
    * 概要（`summary`）
 4. **LangGraph ワークフローによる抽出 & 自己修復**:
-   * 128k コンテキストで論文テキストを送信し、上記の Pydantic スキーマに沿った JSON を構造化出力。
-   * 不正フォーマット時は自己修復ノードが自動でリトライ。
+   * 各チャンクから Pydantic スキーマに沿って構造化抽出し、モデル・評価記録を重複統合。
+   * 失敗したチャンクだけ、直前のエラー内容をプロンプトへ添えて最大2回再試行。すべてのチャンクが成功した場合に限って保存し、上限到達時は失敗を返して保存しない。
 5. **KùzuDB (`kuzu`)**:
    * 以下のノードとリレーションをローカル DB に書き込み。
    * **ノード**: `Model`（LLM名）, `Benchmark`（評価データセット）, `Paper`（論文出典）, `Evaluation`（論文ごとの評価観測）

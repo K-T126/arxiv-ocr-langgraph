@@ -5,11 +5,11 @@ ingest.py - arXiv検索・PDF自動取得・要約抽出・グラフDB登録ス�
 README.md Step 2 の仕様に従い、以下のパイプラインを LangGraph ワークフローとして実行します:
 1. arXiv API で cs.CL かつ LLM 関連論文を検索し、PDF を data/ にダウンロード
 2. [LangGraph Ingest Pipeline]
-   - TextExtractNode: PyMuPDF (fitz) で論文本文テキストを抽出
-   - AnalyzePaperNode: OpenRouter (LangChain ChatOpenAI) + Qwen/Qwen2.5-72B-Instruct で Pydantic 構造化抽出
-   - ValidateNode: 抽出データのスキーマ妥当性検証
-   - HealNode: スキーマ不備時の自己修復/再試行ループ
-   - SaveKuzuNode: KùzuDB (arxiv_graph.kuzu) にノード (Model, Benchmark) とリレーションを MERGE 登録
+   - TextExtractNode: PyMuPDF で全ページを取得し、ページ範囲付きチャンクへ分割
+   - AnalyzeChunkNode: 各チャンクから Pydantic 構造化抽出
+   - ValidateNode: チャンク単位のスキーマ妥当性検証
+   - HealNode: エラー内容に応じた失敗チャンクの再試行/コンテキスト超過時の再分割
+   - SaveKuzuNode: 全チャンク成功後に統合結果を KùzuDB へ保存
 """
 
 import argparse
@@ -39,6 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 2
+CHUNK_CHAR_LIMIT = 24000
 
 # --- Pydantic スキーマ定義 ---
 
@@ -102,9 +103,16 @@ class PaperIngestState(TypedDict, total=False):
     paper_title: str
     arxiv_id: str
     source_url: str
-    raw_text: str
+    chunks: List[str]
+    chunk_sources: List[str]
+    text_char_count: int
+    chunk_index: int
+    chunk_analyses: List[PaperAnalysis]
+    chunk_analysis: Optional[PaperAnalysis]
+    retry_feedback: str
     analysis: Optional[PaperAnalysis]
     error: Optional[str]
+    ingest_status: str
     retry_count: int
     is_valid: bool
     db_path: str
@@ -176,28 +184,102 @@ def init_kuzu_db(db_path: str):
 # --- PDF テキスト抽出 ---
 
 
-def extract_text_from_pdf(pdf_path: str, max_chars: int = 250000) -> str:
-    """PyMuPDF を用いて PDF から本文テキストを抽出する"""
+def extract_text_chunks_from_pdf(pdf_path: str, max_chars_per_chunk: int = CHUNK_CHAR_LIMIT) -> tuple[List[str], List[str], int]:
+    """Extract every page and split at page boundaries (or within oversized pages)."""
     logger.info("Extracting text from PDF: %s", pdf_path)
-    doc = pymupdf.open(pdf_path)
-    full_text = []
+    chunks: List[str] = []
+    sources: List[str] = []
+    current_pages: List[str] = []
+    current_start = 1
+    current_size = 0
+    text_char_count = 0
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        full_text.append(page.get_text())
+    def flush(end_page: int):
+        nonlocal current_pages, current_size, current_start
+        if current_pages:
+            chunks.append("\n\n".join(current_pages))
+            sources.append(f"pages {current_start}-{end_page}")
+            current_pages = []
+            current_size = 0
 
-    extracted = "\n\n".join(full_text)
-    doc.close()
+    with pymupdf.open(pdf_path) as doc:
+        for page_index, page in enumerate(doc):
+            page_num = page_index + 1
+            page_text = (page.get_text() or "").strip()
+            text_char_count += len(page_text)
+            if not page_text:
+                continue
 
-    if len(extracted) > max_chars:
-        logger.warning(
-            "Text truncated from %d to %d characters to respect token limits.",
-            len(extracted),
-            max_chars,
-        )
-        extracted = extracted[:max_chars]
+            # Split unusually long single pages without dropping any characters.
+            pieces = [page_text[i:i + max_chars_per_chunk] for i in range(0, len(page_text), max_chars_per_chunk)]
+            for piece_index, piece in enumerate(pieces):
+                if current_size and current_size + len(piece) > max_chars_per_chunk:
+                    flush(page_num - 1 if piece_index == 0 else page_num)
+                    current_start = page_num
+                if not current_pages:
+                    current_start = page_num
+                current_pages.append(piece)
+                current_size += len(piece)
+                if len(pieces) > 1:
+                    flush(page_num)
+                    current_start = page_num
+    flush(len(doc))
+    if text_char_count == 0:
+        raise ValueError("PDFからテキストを抽出できませんでした。スキャン画像PDFの場合はOCRが必要です。")
+    logger.info("Extracted %d characters into %d chunks", text_char_count, len(chunks))
+    return chunks, sources, text_char_count
 
-    return extracted
+
+def merge_chunk_analyses(
+    analyses: List[PaperAnalysis], paper_title: str, arxiv_id: Optional[str], source_url: Optional[str]
+) -> PaperAnalysis:
+    """Merge per-chunk findings while retaining distinct evaluation observations."""
+    merged_models: Dict[str, ModelInfo] = {}
+    for analysis in analyses:
+        for model in analysis.models:
+            key = " ".join(model.model_name.casefold().split())
+            if not key:
+                continue
+            current = merged_models.get(key)
+            if current is None:
+                merged_models[key] = model.model_copy(deep=True)
+                continue
+            if not current.base_model and model.base_model:
+                current.base_model = model.base_model
+            if not current.method_type and model.method_type:
+                current.method_type = model.method_type
+            if model.summary and (not current.summary or len(model.summary) > len(current.summary)):
+                current.summary = model.summary
+            if model.evidence and model.evidence not in (current.evidence or ""):
+                current.evidence = " | ".join(filter(None, [current.evidence, model.evidence]))
+            seen = {(ev.benchmark.casefold(), ev.score or "", ev.metric or "", ev.conditions or "") for ev in current.evaluations}
+            for evaluation in model.evaluations:
+                ev_key = (evaluation.benchmark.casefold(), evaluation.score or "", evaluation.metric or "", evaluation.conditions or "")
+                if ev_key not in seen:
+                    current.evaluations.append(evaluation.model_copy(deep=True))
+                    seen.add(ev_key)
+                elif evaluation.evidence:
+                    for existing in current.evaluations:
+                        if (existing.benchmark.casefold(), existing.score or "", existing.metric or "", existing.conditions or "") == ev_key:
+                            if evaluation.evidence not in (existing.evidence or ""):
+                                existing.evidence = " | ".join(filter(None, [existing.evidence, evaluation.evidence]))
+                            break
+    return PaperAnalysis(
+        paper_title=paper_title,
+        arxiv_id=arxiv_id,
+        source_url=source_url,
+        models=list(merged_models.values()),
+    )
+
+
+def attach_chunk_source(analysis: PaperAnalysis, source: str) -> PaperAnalysis:
+    """Persist the PDF page range alongside each extracted claim's evidence."""
+    prefix = f"[{source}]"
+    for model in analysis.models:
+        model.evidence = f"{prefix} {model.evidence}" if model.evidence else prefix
+        for evaluation in model.evaluations:
+            evaluation.evidence = f"{prefix} {evaluation.evidence}" if evaluation.evidence else prefix
+    return analysis
 
 
 # --- KùzuDB への保存処理 ---
@@ -302,164 +384,178 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis, paper_title: Op
 
 
 def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
-    """LangGraph による論文取り込みワークフローを構築する"""
+    """Build a chunked extraction workflow with bounded, actionable retries."""
 
     def extract_text_node(state: PaperIngestState) -> Dict[str, Any]:
-        """Node 1: PDF からテキスト抽出"""
-        pdf_path = state["pdf_path"]
         try:
-            text = extract_text_from_pdf(pdf_path)
-            return {"raw_text": text, "retry_count": state.get("retry_count", 0)}
-        except Exception as e:
-            logger.error("Text extraction failed for %s: %s", pdf_path, e)
-            return {"raw_text": "", "error": str(e), "is_valid": False}
+            chunks, sources, char_count = extract_text_chunks_from_pdf(state["pdf_path"])
+            return {"chunks": chunks, "chunk_sources": sources, "text_char_count": char_count,
+                    "chunk_index": 0, "chunk_analyses": [], "retry_count": 0, "error": None}
+        except Exception as exc:
+            logger.exception("Text extraction failed for %s", state.get("pdf_path"))
+            return {"chunks": [], "error": f"PDF text extraction failed: {exc}", "is_valid": False}
 
-    def analyze_paper_node(state: PaperIngestState) -> Dict[str, Any]:
-        """Node 2: LLM (Qwen2.5-72B via OpenRouter) で Pydantic 構造化抽出"""
-        if state.get("dry_run"):
-            logger.info("[Dry-Run] Skipping LLM extraction node.")
-            return {"analysis": None, "is_valid": True}
-
+    def analyze_chunk_node(state: PaperIngestState) -> Dict[str, Any]:
         if not llm:
-            return {"error": "LLM client not configured", "is_valid": False}
+            return {"chunk_analysis": None, "error": "LLM client not configured", "is_valid": False}
 
-        raw_text = state.get("raw_text", "")
-        paper_title = state.get("paper_title", "Untitled")
+        index = state.get("chunk_index", 0)
+        chunks = state.get("chunks", [])
+        if index >= len(chunks):
+            return {"chunk_analysis": None, "error": f"Invalid chunk index: {index}", "is_valid": False}
 
         system_prompt = (
-            "You are an expert AI research assistant specializing in Large Language Models (LLMs).\n"
-            "Analyze the given academic paper and extract structured information about models, "
-            "their derivation lineage (e.g. Alpaca derived from LLaMA), and benchmark evaluation scores.\n\n"
-            "Output MUST be valid JSON matching this schema:\n"
-            "{\n"
-            '  "paper_title": "string",\n'
-            '  "arxiv_id": "string or null",\n'
-            '  "source_url": "string or null",\n'
-            '  "models": [\n'
-            "    {\n"
-            '      "model_name": "string (e.g., Alpaca-7B)",\n'
-            '      "base_model": "string or null",\n'
-            '      "method_type": "string or null",\n'
-            '      "evaluations": [\n'
-            '        {"benchmark": "string", "score": "string or null", "metric": "string or null", "conditions": "string or null", "evidence": "short quote or table reference"}\n'
-            "      ],\n"
-            '      "summary": "string or null"\n'
-            '      "evidence": "short quote or section/table reference"\n'
-            "    }\n"
-            "  ]\n"
-            "}\n"
-            "Respond ONLY with the JSON object."
+            "You extract structured facts from academic paper excerpts. Only report facts explicitly supported "
+            "by the excerpt; do not infer missing scores or lineage. An excerpt may contain no relevant models, "
+            "in which case return an empty models list. Preserve evaluation conditions and attach a short quote "
+            "or section/table reference as evidence. Return only a JSON object with this shape: "
+            '{"paper_title":"string","arxiv_id":null,"source_url":null,"models":[{"model_name":"string",'
+            '"base_model":null,"method_type":null,"summary":null,"evidence":null,"evaluations":'
+            '[{"benchmark":"string","score":null,"metric":null,"conditions":null,"evidence":null}]}]}'
         )
-
+        source = state.get("chunk_sources", [])[index]
         user_prompt = (
-            f"Paper Title: {paper_title}\n\n"
-            f"--- Paper Text Content ---\n"
-            f"{raw_text}\n\n"
-            f"Extract all primary models/methods, their base models, and benchmark evaluations."
+            f"Paper title: {state.get('paper_title', 'Untitled')}\n"
+            f"Excerpt location: {source}\nChunk: {index + 1}/{len(chunks)}\n\n"
+            f"--- Excerpt ---\n{chunks[index]}\n\n"
+            "Extract models/methods, base models, and benchmark evaluations found in this excerpt."
         )
+        feedback = state.get("retry_feedback", "")
+        if feedback:
+            user_prompt += f"\n\nThe previous attempt failed. Fix this issue on this retry:\n{feedback}"
 
         try:
-            # LangChain structured output 呼び出し（フォールバック付き）
-            structured_llm = llm.with_structured_output(PaperAnalysis)
-            analysis = structured_llm.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_prompt),
-                ]
+            result = llm.with_structured_output(PaperAnalysis).invoke(
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
             )
-            return {"analysis": analysis, "error": None}
-        except Exception as e:
-            logger.warning("Structured output invoke failed: %s. Trying JSON mode parse...", e)
-            # フォールバック: 通常メッセージ呼び出しから JSON 正規表現抽出
+            if isinstance(result, dict):
+                result = PaperAnalysis.model_validate(result)
+            if not isinstance(result, PaperAnalysis):
+                raise ValueError(f"Expected PaperAnalysis, received {type(result).__name__}")
+            return {"chunk_analysis": attach_chunk_source(result, source), "error": None, "is_valid": False}
+        except Exception as structured_error:
             try:
-                res = llm.invoke(
-                    [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=user_prompt),
-                    ]
-                )
-                content = res.content or ""
+                response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+                content = response.content or ""
                 match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content)
-                json_str = match.group(1).strip() if match else content.strip()
-                data = json.loads(json_str)
-                analysis = PaperAnalysis(**data)
-                return {"analysis": analysis, "error": None}
-            except Exception as e2:
-                logger.error("JSON fallback parsing failed: %s", e2)
-                return {"analysis": None, "error": str(e2)}
+                data = json.loads(match.group(1).strip() if match else content.strip())
+                return {"chunk_analysis": attach_chunk_source(PaperAnalysis.model_validate(data), source), "error": None, "is_valid": False}
+            except Exception as fallback_error:
+                detail = f"Structured output: {structured_error}; JSON fallback: {fallback_error}"
+                logger.error("Chunk %d/%d extraction failed: %s", index + 1, len(chunks), detail)
+                return {"chunk_analysis": None, "error": detail, "is_valid": False}
 
-    def validate_analysis_node(state: PaperIngestState) -> Dict[str, Any]:
-        """Node 3: 抽出データの検証"""
-        if state.get("dry_run"):
-            return {"is_valid": True}
-
-        analysis = state.get("analysis")
-        if not analysis or not isinstance(analysis, PaperAnalysis):
-            logger.warning("Validation failed: analysis is empty or invalid type.")
-            return {"is_valid": False}
-
-        if not analysis.models:
-            logger.warning("Validation note: No models were extracted for '%s'.", state.get("paper_title"))
-            # モデルなしでも空の有効な解析として認めるか、リトライするか
-            return {"is_valid": True}
-
-        logger.info(
-            "Validation passed: extracted %d model(s) for '%s'",
-            len(analysis.models),
-            analysis.paper_title,
-        )
-        return {"is_valid": True}
+    def validate_chunk_node(state: PaperIngestState) -> Dict[str, Any]:
+        result = state.get("chunk_analysis")
+        if state.get("error") or not isinstance(result, PaperAnalysis):
+            return {"is_valid": False, "error": state.get("error") or "LLM returned no valid PaperAnalysis"}
+        invalid_models = [model for model in result.models if not model.model_name.strip()]
+        invalid_evaluations = [
+            (model.model_name, evaluation)
+            for model in result.models
+            for evaluation in model.evaluations
+            if not evaluation.benchmark.strip()
+        ]
+        if invalid_models or invalid_evaluations:
+            problems = []
+            if invalid_models:
+                problems.append(f"{len(invalid_models)} model record(s) have an empty model_name")
+            if invalid_evaluations:
+                problems.append(f"{len(invalid_evaluations)} evaluation record(s) have an empty benchmark")
+            return {"is_valid": False, "error": "; ".join(problems)}
+        accumulated = list(state.get("chunk_analyses", []))
+        accumulated.append(result)
+        next_index = state.get("chunk_index", 0) + 1
+        logger.info("Validated chunk %d/%d (%d models)", next_index, len(state.get("chunks", [])), len(result.models))
+        return {"is_valid": True, "chunk_analyses": accumulated, "chunk_index": next_index,
+                "retry_count": 0, "retry_feedback": "", "error": None}
 
     def heal_node(state: PaperIngestState) -> Dict[str, Any]:
-        """Node 4: 自己修復ノード（プロンプト補正 & リトライカウント増加）"""
-        current_retries = state.get("retry_count", 0) + 1
-        logger.info("[Self-Healing] Retry %d/%d for '%s'", current_retries, MAX_RETRIES, state.get("paper_title"))
-        return {"retry_count": current_retries}
+        retries = state.get("retry_count", 0) + 1
+        error = state.get("error") or "The response was invalid; return schema-valid JSON."
+        chunks = list(state.get("chunks", []))
+        sources = list(state.get("chunk_sources", []))
+        index = state.get("chunk_index", 0)
+        normalized_error = error.casefold()
+        context_error_markers = ("context length", "context_length", "too many tokens", "maximum tokens", "prompt is too long", "request too large")
+        if (any(marker in normalized_error for marker in context_error_markers)
+                and index < len(chunks) and len(chunks[index]) > 2000):
+            chunk = chunks[index]
+            midpoint = len(chunk) // 2
+            split_at = chunk.rfind(" ", midpoint - 1000, midpoint + 1000)
+            split_at = split_at if split_at > 0 else midpoint
+            chunks[index:index + 1] = [chunk[:split_at], chunk[split_at:]]
+            sources[index:index + 1] = [sources[index], sources[index]]
+            logger.warning("Context error: split failing excerpt into smaller chunks (%d and %d chars)",
+                           len(chunks[index]), len(chunks[index + 1]))
+            # A smaller replacement excerpt gets its own retry budget.
+            retries = 0
+            error = "The previous excerpt exceeded the model context limit and was split into smaller excerpts."
+        logger.info("Retry %d/%d for chunk %d of '%s'", retries, MAX_RETRIES,
+                    index + 1, state.get("paper_title"))
+        return {"retry_count": retries, "chunks": chunks, "chunk_sources": sources,
+                "retry_feedback": error,
+                "chunk_analysis": None}
+
+    def finalize_analysis_node(state: PaperIngestState) -> Dict[str, Any]:
+        analysis = merge_chunk_analyses(state.get("chunk_analyses", []), state.get("paper_title", "Untitled"),
+                                        state.get("arxiv_id"), state.get("source_url"))
+        status = "no_relevant_models" if not analysis.models else "ready_to_save"
+        return {"analysis": analysis, "ingest_status": status, "error": None}
+
+    def fail_node(state: PaperIngestState) -> Dict[str, Any]:
+        return {"ingest_status": "failed", "error": state.get("error") or "Ingestion failed"}
+
+    def dry_run_node(state: PaperIngestState) -> Dict[str, Any]:
+        return {"ingest_status": "dry_run", "error": None}
 
     def save_kuzu_node(state: PaperIngestState) -> Dict[str, Any]:
-        """Node 5: KùzuDB への永続化"""
-        if state.get("dry_run"):
-            logger.info("[Dry-Run] Skipped database write.")
-            return {}
-
         analysis = state.get("analysis")
-        if not analysis or not analysis.models:
-            logger.info("No models to save for '%s'.", state.get("paper_title"))
-            return {}
-
+        if not isinstance(analysis, PaperAnalysis) or not analysis.models:
+            return {"ingest_status": "no_relevant_models"}
         try:
             target_db = state.get("db_path", db_path)
-            db, conn = init_kuzu_db(target_db)
-            save_to_kuzu(conn, analysis, paper_title=state.get("paper_title"), arxiv_id=state.get("arxiv_id"), source_url=state.get("source_url"))
+            database, conn = init_kuzu_db(target_db)
+            save_to_kuzu(conn, analysis, paper_title=state.get("paper_title"),
+                         arxiv_id=state.get("arxiv_id"), source_url=state.get("source_url"))
             logger.info("Saved analysis for '%s' to KùzuDB at %s", state.get("paper_title"), target_db)
-        except Exception as e:
-            logger.error("Failed to save into KùzuDB: %s", e)
-        return {}
+            return {"ingest_status": "succeeded", "error": None}
+        except Exception as exc:
+            logger.exception("Failed to save into KùzuDB")
+            return {"ingest_status": "failed", "error": f"Database save failed: {exc}"}
 
-    # グラフ構築
     workflow = StateGraph(PaperIngestState)
     workflow.add_node("extract_text", extract_text_node)
-    workflow.add_node("analyze_paper", analyze_paper_node)
-    workflow.add_node("validate_analysis", validate_analysis_node)
+    workflow.add_node("analyze_chunk", analyze_chunk_node)
+    workflow.add_node("validate_chunk", validate_chunk_node)
     workflow.add_node("heal", heal_node)
+    workflow.add_node("finalize_analysis", finalize_analysis_node)
+    workflow.add_node("fail", fail_node)
+    workflow.add_node("dry_run_done", dry_run_node)
     workflow.add_node("save_kuzu", save_kuzu_node)
-
     workflow.set_entry_point("extract_text")
-    workflow.add_edge("extract_text", "analyze_paper")
-    workflow.add_edge("analyze_paper", "validate_analysis")
+
+    def route_after_extract(state: PaperIngestState):
+        if state.get("error"):
+            return "fail"
+        return "dry_run_done" if state.get("dry_run") else "analyze_chunk"
 
     def route_after_validation(state: PaperIngestState):
         if state.get("is_valid"):
-            return "save_kuzu"
-        if state.get("retry_count", 0) < MAX_RETRIES:
-            return "heal"
-        logger.warning("Max retries reached. Proceeding to save_kuzu with partial data.")
-        return "save_kuzu"
+            return "analyze_chunk" if state.get("chunk_index", 0) < len(state.get("chunks", [])) else "finalize_analysis"
+        return "heal" if state.get("retry_count", 0) < MAX_RETRIES else "fail"
 
-    workflow.add_conditional_edges("validate_analysis", route_after_validation)
-    workflow.add_edge("heal", "analyze_paper")
+    workflow.add_conditional_edges("extract_text", route_after_extract)
+    workflow.add_edge("analyze_chunk", "validate_chunk")
+    workflow.add_conditional_edges("validate_chunk", route_after_validation)
+    workflow.add_edge("heal", "analyze_chunk")
+    workflow.add_conditional_edges(
+        "finalize_analysis",
+        lambda state: "save_kuzu" if state.get("ingest_status") == "ready_to_save" else END,
+    )
     workflow.add_edge("save_kuzu", END)
-
+    workflow.add_edge("fail", END)
+    workflow.add_edge("dry_run_done", END)
     return workflow.compile()
 
 
@@ -609,11 +705,9 @@ def main():
             temperature=0.1,
         )
 
-    # KùzuDB 初期化
-    logger.info("Initializing KùzuDB at: %s", args.db_path)
-    db, conn = init_kuzu_db(args.db_path)
-
     if args.seed_sample_data:
+        logger.info("Initializing KùzuDB at: %s", args.db_path)
+        db, conn = init_kuzu_db(args.db_path)
         logger.info("Seeding sample LLM lineage and evaluation data into KùzuDB...")
         sample_analysis = PaperAnalysis(
             paper_title="Sample LLM Family Benchmarks",
@@ -680,6 +774,7 @@ def main():
     # LangGraph パイプラインをコンパイル
     app = create_ingest_graph(llm=llm, db_path=args.db_path)
 
+    failed = 0
     for title, pdf_path, paper_id, source_url in targets:
         logger.info("==========================================")
         logger.info("[LangGraph] Processing paper: %s", title)
@@ -688,7 +783,6 @@ def main():
             "paper_title": title,
             "arxiv_id": paper_id,
             "source_url": source_url,
-            "raw_text": "",
             "analysis": None,
             "error": None,
             "retry_count": 0,
@@ -698,18 +792,29 @@ def main():
         }
 
         try:
-            final_state = app.invoke(initial_state)
-            if args.dry_run:
+            final_state = app.invoke(initial_state, config={"recursion_limit": 10000})
+            status = final_state.get("ingest_status", "failed")
+            if status == "dry_run":
                 logger.info(
-                    "[Dry-Run] Extracted %d characters. Skipping LLM call and DB write.",
-                    len(final_state.get("raw_text", "")),
+                    "[Dry-Run] Extracted %d characters into %d chunks. Skipping LLM call and DB write.",
+                    final_state.get("text_char_count", 0),
+                    len(final_state.get("chunks", [])),
                 )
+            elif status == "succeeded":
+                logger.info("Successfully completed ingestion for '%s'.", title)
+            elif status == "no_relevant_models":
+                logger.info("No relevant models found in '%s'; nothing was saved.", title)
             else:
-                logger.info("Successfully completed LangGraph ingestion for '%s'.", title)
+                failed += 1
+                logger.error("Ingestion failed for '%s': %s", title, final_state.get("error", "unknown error"))
         except Exception as e:
+            failed += 1
             logger.error("LangGraph execution failed for %s: %s", title, e, exc_info=True)
 
     logger.info("All LangGraph ingestion tasks completed.")
+    if failed:
+        logger.error("%d of %d paper(s) failed.", failed, len(targets))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
