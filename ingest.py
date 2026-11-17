@@ -113,6 +113,7 @@ class PaperIngestState(TypedDict, total=False):
     analysis: Optional[PaperAnalysis]
     error: Optional[str]
     ingest_status: str
+    is_duplicate: bool
     retry_count: int
     is_valid: bool
     db_path: str
@@ -171,6 +172,7 @@ def init_kuzu_db(db_path: str):
 
     # Provenance and observation nodes preserve sources and repeated results.
     conn.execute("CREATE NODE TABLE IF NOT EXISTS Paper(arxiv_id STRING, title STRING, source_url STRING, PRIMARY KEY (arxiv_id))")
+    conn.execute("CREATE NODE TABLE IF NOT EXISTS IngestedPaper(paper_id STRING, PRIMARY KEY (paper_id))")
     conn.execute("CREATE NODE TABLE IF NOT EXISTS Evaluation(evaluation_id STRING, score STRING, metric STRING, conditions STRING, evidence STRING, PRIMARY KEY (evaluation_id))")
     conn.execute("CREATE REL TABLE IF NOT EXISTS MENTIONED_IN(FROM Model TO Paper)")
     conn.execute("CREATE REL TABLE IF NOT EXISTS DERIVED_FROM_REPORTED(FROM Model TO Model, paper_id STRING, evidence STRING)")
@@ -282,13 +284,31 @@ def attach_chunk_source(analysis: PaperAnalysis, source: str) -> PaperAnalysis:
     return analysis
 
 
+def normalize_arxiv_id(arxiv_id: Optional[str]) -> Optional[str]:
+    """Normalize URLs and versioned arXiv IDs to one stable paper identity."""
+    if not arxiv_id:
+        return None
+    value = arxiv_id.strip().rstrip("/")
+    if "arxiv.org" in value:
+        value = value.rsplit("/", 1)[-1]
+    value = value.removesuffix(".pdf")
+    return re.sub(r"v\d+$", "", value, flags=re.IGNORECASE)
+
+
+def paper_identity(arxiv_id: Optional[str], title: str) -> str:
+    normalized_id = normalize_arxiv_id(arxiv_id)
+    if normalized_id:
+        return normalized_id
+    return "title:" + hashlib.sha256(title.strip().casefold().encode()).hexdigest()[:24]
+
+
 # --- KùzuDB への保存処理 ---
 
 
 def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis, paper_title: Optional[str] = None, arxiv_id: Optional[str] = None, source_url: Optional[str] = None):
     """抽出したデータを KùzuDB に書き込む"""
     title = analysis.paper_title or paper_title or "Untitled"
-    paper_id = analysis.arxiv_id or arxiv_id or "title:" + hashlib.sha256(title.strip().casefold().encode()).hexdigest()[:24]
+    paper_id = paper_identity(arxiv_id or analysis.arxiv_id, title)
     paper_url = analysis.source_url or source_url or (f"https://arxiv.org/abs/{paper_id}" if not paper_id.startswith("title:") else "")
     conn.execute("MERGE (p:Paper {arxiv_id: $id}) ON CREATE SET p.title = $title, p.source_url = $url ON MATCH SET p.title = $title, p.source_url = $url", parameters={"id": paper_id, "title": title, "url": paper_url})
 
@@ -302,7 +322,6 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis, paper_title: Op
             """
             MERGE (m:Model {name: $name})
             ON CREATE SET m.method_type = $method_type, m.summary = $summary
-            ON MATCH SET m.method_type = $method_type, m.summary = $summary
             """,
             parameters={
                 "name": model_name,
@@ -338,7 +357,7 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis, paper_title: Op
                     base_model_name,
                 )
 
-        # 3. 評価ベンチマークの登録と EVALUATED_ON リレーション作成
+        # 3. 評価結果は出典付きEvaluationノードに追記する。
         for ev in model.evaluations:
             b_name = ev.benchmark.strip()
             if not b_name:
@@ -363,7 +382,6 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis, paper_title: Op
                 MATCH (m:Model {name: $mname}), (b:Benchmark {name: $bname})
                 MERGE (m)-[r:EVALUATED_ON]->(b)
                 ON CREATE SET r.score = $score, r.metric = $metric
-                ON MATCH SET r.score = $score, r.metric = $metric
                 """,
                 parameters={
                     "mname": model_name,
@@ -379,12 +397,50 @@ def save_to_kuzu(conn: kuzu.Connection, analysis: PaperAnalysis, paper_title: Op
                 b_name,
             )
 
+    # Complete marker is written last. In case of a mid-save error, a retry can
+    # safely MERGE the same facts and will not be mistaken for a completed ingest.
+    conn.execute("MERGE (:IngestedPaper {paper_id: $id})", parameters={"id": paper_id})
+
 
 # --- LangGraph ノード定義 ---
 
 
 def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
     """Build a chunked extraction workflow with bounded, actionable retries."""
+
+    def check_duplicate_node(state: PaperIngestState) -> Dict[str, Any]:
+        target_db = state.get("db_path", db_path)
+        identity = paper_identity(state.get("arxiv_id"), state.get("paper_title", "Untitled"))
+        if not os.path.exists(target_db):
+            return {"is_duplicate": False}
+        try:
+            database = kuzu.Database(target_db, read_only=True)
+            conn = kuzu.Connection(database)
+            try:
+                result = conn.execute(
+                    "MATCH (i:IngestedPaper {paper_id: $id}) RETURN i.paper_id",
+                    parameters={"id": identity},
+                )
+            except Exception:
+                # Older databases may have Paper but no completion marker table.
+                try:
+                    result = conn.execute(
+                        "MATCH (p:Paper {arxiv_id: $id}) RETURN p.arxiv_id",
+                        parameters={"id": identity},
+                    )
+                except Exception:
+                    return {"is_duplicate": False}
+            is_duplicate = result.has_next()
+            if is_duplicate:
+                logger.info("Skipping already ingested paper %s (%s)", identity, state.get("paper_title"))
+            update = {"is_duplicate": is_duplicate}
+            if is_duplicate:
+                update["ingest_status"] = "skipped_duplicate"
+            return update
+        except Exception as exc:
+            # A failed read must not silently suppress a new ingest.
+            logger.warning("Could not check for duplicate paper %s: %s", identity, exc)
+            return {"is_duplicate": False}
 
     def extract_text_node(state: PaperIngestState) -> Dict[str, Any]:
         try:
@@ -500,8 +556,7 @@ def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
     def finalize_analysis_node(state: PaperIngestState) -> Dict[str, Any]:
         analysis = merge_chunk_analyses(state.get("chunk_analyses", []), state.get("paper_title", "Untitled"),
                                         state.get("arxiv_id"), state.get("source_url"))
-        status = "no_relevant_models" if not analysis.models else "ready_to_save"
-        return {"analysis": analysis, "ingest_status": status, "error": None}
+        return {"analysis": analysis, "ingest_status": "ready_to_save", "error": None}
 
     def fail_node(state: PaperIngestState) -> Dict[str, Any]:
         return {"ingest_status": "failed", "error": state.get("error") or "Ingestion failed"}
@@ -511,20 +566,22 @@ def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
 
     def save_kuzu_node(state: PaperIngestState) -> Dict[str, Any]:
         analysis = state.get("analysis")
-        if not isinstance(analysis, PaperAnalysis) or not analysis.models:
-            return {"ingest_status": "no_relevant_models"}
+        if not isinstance(analysis, PaperAnalysis):
+            return {"ingest_status": "failed", "error": "Final PaperAnalysis is missing or invalid"}
         try:
             target_db = state.get("db_path", db_path)
             database, conn = init_kuzu_db(target_db)
             save_to_kuzu(conn, analysis, paper_title=state.get("paper_title"),
                          arxiv_id=state.get("arxiv_id"), source_url=state.get("source_url"))
             logger.info("Saved analysis for '%s' to KùzuDB at %s", state.get("paper_title"), target_db)
-            return {"ingest_status": "succeeded", "error": None}
+            status = "succeeded" if analysis.models else "no_relevant_models"
+            return {"ingest_status": status, "error": None}
         except Exception as exc:
             logger.exception("Failed to save into KùzuDB")
             return {"ingest_status": "failed", "error": f"Database save failed: {exc}"}
 
     workflow = StateGraph(PaperIngestState)
+    workflow.add_node("check_duplicate", check_duplicate_node)
     workflow.add_node("extract_text", extract_text_node)
     workflow.add_node("analyze_chunk", analyze_chunk_node)
     workflow.add_node("validate_chunk", validate_chunk_node)
@@ -533,7 +590,10 @@ def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
     workflow.add_node("fail", fail_node)
     workflow.add_node("dry_run_done", dry_run_node)
     workflow.add_node("save_kuzu", save_kuzu_node)
-    workflow.set_entry_point("extract_text")
+    workflow.set_entry_point("check_duplicate")
+
+    def route_after_duplicate_check(state: PaperIngestState):
+        return END if state.get("is_duplicate") else "extract_text"
 
     def route_after_extract(state: PaperIngestState):
         if state.get("error"):
@@ -545,6 +605,7 @@ def create_ingest_graph(llm: Optional[ChatOpenAI], db_path: str):
             return "analyze_chunk" if state.get("chunk_index", 0) < len(state.get("chunks", [])) else "finalize_analysis"
         return "heal" if state.get("retry_count", 0) < MAX_RETRIES else "fail"
 
+    workflow.add_conditional_edges("check_duplicate", route_after_duplicate_check)
     workflow.add_conditional_edges("extract_text", route_after_extract)
     workflow.add_edge("analyze_chunk", "validate_chunk")
     workflow.add_conditional_edges("validate_chunk", route_after_validation)
@@ -802,8 +863,10 @@ def main():
                 )
             elif status == "succeeded":
                 logger.info("Successfully completed ingestion for '%s'.", title)
+            elif status == "skipped_duplicate":
+                logger.info("Skipping '%s': this paper is already marked as ingested.", title)
             elif status == "no_relevant_models":
-                logger.info("No relevant models found in '%s'; nothing was saved.", title)
+                logger.info("No relevant models found in '%s'; paper ingestion was recorded without model facts.", title)
             else:
                 failed += 1
                 logger.error("Ingestion failed for '%s': %s", title, final_state.get("error", "unknown error"))
