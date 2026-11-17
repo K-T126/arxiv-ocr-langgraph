@@ -2,13 +2,46 @@
 api.py - FastAPI ルーター定義
 """
 
-from typing import Any, Dict, List, Optional
+import hmac
+import os
+from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from app.service import GraphRAGService
 
-router = APIRouter(prefix="/api", tags=["GraphRAG"])
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def require_api_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    """Require a high-entropy application token before exposing API operations."""
+    expected_token = os.getenv("APP_ACCESS_TOKEN", "")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="API authentication is not configured")
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="A valid Bearer token is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not hmac.compare_digest(
+        credentials.credentials.encode("utf-8"), expected_token.encode("utf-8")
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="A valid Bearer token is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+router = APIRouter(
+    prefix="/api",
+    tags=["GraphRAG"],
+    dependencies=[Depends(require_api_token)],
+)
 
 
 # --- Pydantic スキーマ ---
@@ -17,13 +50,9 @@ router = APIRouter(prefix="/api", tags=["GraphRAG"])
 class QueryRequest(BaseModel):
     question: str = Field(
         ...,
+        max_length=2000,
         description="LLMモデルやベンチマークに関する質問文",
         example="LLaMAモデルの派生関係とMMLUスコアについて教えてください",
-    )
-    model: Optional[str] = Field(
-        None,
-        description="OpenRouter で使用するモデル名 (未指定の場合はデフォルト: Qwen2.5-72B-Instruct)",
-        example="qwen/qwen-2.5-72b-instruct",
     )
     no_llm: bool = Field(
         False,
@@ -89,7 +118,8 @@ async def query_endpoint(
     try:
         res = service.query(
             question=req.question,
-            model=req.model,
+            # Public callers cannot select a potentially more expensive model.
+            model=None,
             no_llm=req.no_llm,
             show_context=req.show_context,
         )

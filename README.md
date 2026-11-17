@@ -100,7 +100,9 @@ arxiv-ocr-langgraph/
 3. **環境変数の設定 (`.env`)**:
    ```env
    OPENROUTER_API_KEY="your_openrouter_api_key_here"
+   APP_ACCESS_TOKEN="a-long-random-token"
    ```
+   `APP_ACCESS_TOKEN` は `openssl rand -hex 32` などで生成し、共有が必要な利用者にだけ安全な経路で渡してください。Web画面では質問APIを使う際にBearerトークンの入力が必要です。
 
 ---
 
@@ -227,9 +229,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
   * インタラクティブなナレッジグラフプレビュー
 * **Swagger API ドキュメント**: `http://localhost:8080/docs`
 * **エンドポイント一覧**:
-  * `POST /api/query`: GraphRAG 質問回答 API
-  * `GET /api/stats`: グラフ統計情報（モデル数・リレーション数）
-  * `GET /api/graph`: ノード & エッジ JSON データ
+  * `POST /api/query`: GraphRAG 質問回答 API（Bearer認証必須）
+  * `GET /api/stats`: グラフ統計情報（Bearer認証必須）
+  * `GET /api/graph`: ノード & エッジ JSON データ（Bearer認証必須）
   * `GET /graph/view`: 全画面インタラクティブグラフ HTML
   * `GET /health`: ヘルスチェック (Cloud Run 死活監視)
 
@@ -237,16 +239,30 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 
 ### 5. GCP (Google Cloud Run) へのデプロイ
 
+デプロイ前に Secret Manager に `APP_ACCESS_TOKEN` を作成してください。任意で `OPENROUTER_API_KEY` も作成できます。デプロイスクリプトはこれらをSecret ManagerからCloud Runへ渡し、実行サービスアカウントにSecret Accessor権限を付与します。
+
 ```bash
 # 1. gcloud CLI のログインとプロジェクト設定
 gcloud auth login
 gcloud config set project <YOUR_PROJECT_ID>
 
-# 2. デプロイスクリプトを実行
-export OPENROUTER_API_KEY="your-openrouter-key"
-./deploy_gcp.sh
+# 2. アクセストークンを生成してSecret Managerへ登録（表示値を安全に保管）
+APP_ACCESS_TOKEN_VALUE="$(openssl rand -hex 32)"
+printf '%s' "$APP_ACCESS_TOKEN_VALUE" | gcloud secrets create APP_ACCESS_TOKEN --replication-policy=automatic --data-file=-
+printf 'Web画面/APIに入力するトークン: %s\n' "$APP_ACCESS_TOKEN_VALUE"
+unset APP_ACCESS_TOKEN_VALUE
 
+# 3. OpenRouterキーをSecret Managerへ登録（任意）
+gcloud secrets create OPENROUTER_API_KEY --replication-policy=automatic
+read -rsp "OpenRouter API key: " OPENROUTER_API_KEY_VALUE; printf '\n'
+printf '%s' "$OPENROUTER_API_KEY_VALUE" | gcloud secrets versions add OPENROUTER_API_KEY --data-file=-
+unset OPENROUTER_API_KEY_VALUE
+
+# 4. デプロイスクリプトを実行
+./deploy_gcp.sh
 ```
+
+`APP_ACCESS_TOKEN` secret が存在しない場合、デプロイは停止します。公開URL自体は開けますが、`/api/*` は有効なBearerトークンなしでは利用できません。Swagger UIから呼び出す場合も `Authorize` に同じトークンを入力してください。
 
 ### 6. Cloud Runで作成した成果物のURL
 サービス公開URL: https://arxiv-graphrag-vqqqjccd6q-an.a.run.app

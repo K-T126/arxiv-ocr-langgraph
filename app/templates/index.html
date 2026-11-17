@@ -70,6 +70,18 @@
           <i class="fa-regular fa-comment-dots mr-2 text-indigo-600"></i> GraphRAG への質問入力
         </h2>
         <form id="query-form" class="space-y-3">
+          <div>
+            <label for="api-token-input" class="block text-xs font-medium text-slate-600 mb-1">APIアクセス用トークン</label>
+            <input
+              id="api-token-input"
+              type="password"
+              autocomplete="off"
+              required
+              class="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+              placeholder="管理者から受け取ったトークン"
+            >
+            <p class="mt-1 text-[11px] text-slate-400">このページを再読み込みすると、トークンの再入力が必要です。</p>
+          </div>
           <div class="relative">
             <textarea
               id="question-input"
@@ -149,6 +161,7 @@
   <script>
     const form = document.getElementById('query-form');
     const input = document.getElementById('question-input');
+    const apiTokenInput = document.getElementById('api-token-input');
     const submitBtn = document.getElementById('submit-btn');
     const qaContainer = document.getElementById('qa-container');
     const emptyState = document.getElementById('empty-state');
@@ -173,7 +186,12 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const question = input.value.trim();
+      const apiToken = apiTokenInput.value.trim();
       if (!question) return;
+      if (!apiToken) {
+        apiTokenInput.focus();
+        return;
+      }
 
       if (emptyState) {
         emptyState.remove();
@@ -205,7 +223,10 @@
       try {
         const response = await fetch('/api/query', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiToken}`
+          },
           body: JSON.stringify({
             question: question,
             no_llm: noLlmToggle.checked,

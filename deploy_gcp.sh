@@ -10,7 +10,7 @@ set -e
 #      gcloud config set project <YOUR_PROJECT_ID>
 #
 #   2. デプロイ実行:
-#      export OPENROUTER_API_KEY="your-openrouter-key"
+#      Create Secret Manager secrets named APP_ACCESS_TOKEN and OPENROUTER_API_KEY.
 #      ./deploy_gcp.sh
 # ==============================================================================
 
@@ -25,6 +25,9 @@ if [ -z "$PROJECT_ID" ]; then
     exit 1
 fi
 
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+RUNTIME_SERVICE_ACCOUNT="${RUNTIME_SERVICE_ACCOUNT:-${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
+
 echo "=========================================================="
 echo "🚀 Google Cloud Run へのデプロイを開始します"
 echo "  サービス名: $SERVICE_NAME"
@@ -33,18 +36,32 @@ echo "  プロジェクト: $PROJECT_ID"
 echo "=========================================================="
 
 # 必要な API の有効化 (初回のみ)
-echo "📦 Cloud Build & Cloud Run API の有効化を確認中..."
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com --project="$PROJECT_ID"
+echo "📦 Cloud Build, Cloud Run, Secret Manager API の有効化を確認中..."
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com --project="$PROJECT_ID"
 
-# 環境変数の準備
-ENV_VARS="KUZU_DB_PATH=/app/arxiv_graph.kuzu"
-if [ -n "$OPENROUTER_API_KEY" ]; then
-    ENV_VARS="$ENV_VARS,OPENROUTER_API_KEY=$OPENROUTER_API_KEY"
-    echo "🔑 OPENROUTER_API_KEY を設定しました。"
+if ! gcloud secrets describe APP_ACCESS_TOKEN --project="$PROJECT_ID" >/dev/null 2>&1; then
+    echo "❌ Secret Manager に APP_ACCESS_TOKEN がありません。"
+    echo "   README の手順で高エントロピーのトークンを登録してから再実行してください。"
+    exit 1
+fi
+
+SECRET_MAPPINGS="APP_ACCESS_TOKEN=APP_ACCESS_TOKEN:latest"
+if gcloud secrets describe OPENROUTER_API_KEY --project="$PROJECT_ID" >/dev/null 2>&1; then
+    SECRET_MAPPINGS="$SECRET_MAPPINGS,OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest"
 else
-    echo "⚠️ 警告: OPENROUTER_API_KEY がローカルシェルで未定義です。"
-    echo "   API キーなしの場合、グラフ検索(No-LLM)のみ動作します。"
-    echo "   後から Cloud Run コンソールで環境変数を設定することも可能です。"
+    echo "⚠️ OPENROUTER_API_KEY secret がないため、LLM回答は無効です。"
+fi
+
+echo "🔐 Cloud Run 実行サービスアカウントに必要なSecret Manager権限を付与します: $RUNTIME_SERVICE_ACCOUNT"
+gcloud secrets add-iam-policy-binding APP_ACCESS_TOKEN \
+    --project="$PROJECT_ID" \
+    --member="serviceAccount:$RUNTIME_SERVICE_ACCOUNT" \
+    --role="roles/secretmanager.secretAccessor" >/dev/null
+if gcloud secrets describe OPENROUTER_API_KEY --project="$PROJECT_ID" >/dev/null 2>&1; then
+    gcloud secrets add-iam-policy-binding OPENROUTER_API_KEY \
+        --project="$PROJECT_ID" \
+        --member="serviceAccount:$RUNTIME_SERVICE_ACCOUNT" \
+        --role="roles/secretmanager.secretAccessor" >/dev/null
 fi
 
 # Cloud Run ソースデプロイ (Cloud Build でコンテナ化され自動デプロイされる)
@@ -55,7 +72,9 @@ gcloud run deploy "$SERVICE_NAME" \
     --region "$REGION" \
     --platform managed \
     --allow-unauthenticated \
-    --set-env-vars "$ENV_VARS" \
+    --service-account "$RUNTIME_SERVICE_ACCOUNT" \
+    --set-env-vars "KUZU_DB_PATH=/app/arxiv_graph.kuzu" \
+    --set-secrets "$SECRET_MAPPINGS" \
     --memory 2Gi \
     --cpu 1 \
     --timeout 300s \
