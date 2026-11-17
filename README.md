@@ -265,4 +265,4 @@ unset OPENROUTER_API_KEY_VALUE
 `APP_ACCESS_TOKEN` secret が存在しない場合、デプロイは停止します。公開URL自体は開けますが、`/api/*` は有効なBearerトークンなしでは利用できません。Swagger UIから呼び出す場合も `Authorize` に同じトークンを入力してください。
 
 ### 6. Cloud Runで作成した成果物のURL
-サービス公開URL: https://arxiv-graphrag-vqqqjccd6q-an.a.run.app
+サービス公開URL:
